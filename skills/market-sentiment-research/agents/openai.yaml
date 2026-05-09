@@ -1,0 +1,4 @@
+interface:
+  display_name: "Market Sentiment Research"
+  short_description: "Daily selloff research and review packets"
+  default_prompt: "Use $market-sentiment-research to review a stock pullback and produce a traceable action decision."

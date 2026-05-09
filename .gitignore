@@ -7,6 +7,9 @@
 secrets/*
 !secrets/README.md
 !secrets/*.example.sh
+sharing-resources/secrets/*
+!sharing-resources/secrets/README.md
+!sharing-resources/secrets/*.example.sh
 
 # Runtime and generated data
 data/
@@ -21,6 +24,7 @@ legacy_skills/
 __pycache__/
 *.py[cod]
 src/*.egg-info/
+sharing-resources/src/*.egg-info/
 
 # macOS/editor artifacts
 .DS_Store

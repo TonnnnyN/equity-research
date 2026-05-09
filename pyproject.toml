@@ -22,7 +22,7 @@ social-x-twikit = ["twikit>=2.3.3"]
 market-sentiment = "market_sentiment.cli:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "sharing-resources/src"}
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["sharing-resources/src"]

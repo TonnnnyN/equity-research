@@ -1,0 +1,4 @@
+interface:
+  display_name: "US Small/Mid Dislocation"
+  short_description: "U.S. small/mid dislocation screening"
+  default_prompt: "Use $us-smallmid-dislocation to screen a prepared U.S. small/mid CSV for dislocation candidates."
