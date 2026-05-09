@@ -1,0 +1,26 @@
+# Local secrets
+.market_sentiment.secrets.sh
+*.secrets.sh
+.env
+.env.*
+!.env.example
+secrets/*
+!secrets/README.md
+!secrets/*.example.sh
+
+# Runtime and generated data
+data/
+*.sqlite3
+*.db
+
+# Local archives of pre-merge skill folders
+legacy_skills/
+
+# Python/test artifacts
+.pytest_cache/
+__pycache__/
+*.py[cod]
+src/*.egg-info/
+
+# macOS/editor artifacts
+.DS_Store

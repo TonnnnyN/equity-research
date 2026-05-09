@@ -1,0 +1,4 @@
+interface:
+  display_name: "Market Sentiment"
+  short_description: "Daily market research and dislocation screening"
+  default_prompt: "Use $market-sentiment to run or review the daily market sentiment pipeline and decide which tickers need follow-up."

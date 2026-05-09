@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import argparse
+from datetime import date, datetime
+import sys
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from market_sentiment.config import load_config
+from market_sentiment.email_delivery import send_report_email
+from market_sentiment.pipeline import DailyPipeline
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="market-sentiment")
+    parser.add_argument(
+        "--config",
+        dest="config_path",
+        default=None,
+        help="Optional path to the project TOML config.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("init-db", help="Initialize the SQLite database.")
+
+    run_daily = subparsers.add_parser("run-daily", help="Run the daily pipeline.")
+    run_daily.add_argument(
+        "--date",
+        dest="run_date",
+        help="Run date in YYYY-MM-DD format. Defaults to today.",
+    )
+    run_daily.add_argument(
+        "--email",
+        dest="send_email",
+        action="store_true",
+        help="Send the generated report by email after the run completes.",
+    )
+
+    show_report = subparsers.add_parser("show-report", help="Display a saved markdown report.")
+    show_report.add_argument("--date", dest="run_date", required=True, help="Run date in YYYY-MM-DD format.")
+
+    subparsers.add_parser("preflight", help="Validate runtime configuration for optional providers.")
+
+    cleanup_data = subparsers.add_parser("cleanup-data", help="Prune old reports, raw payloads, and cached DB rows.")
+    cleanup_data.add_argument(
+        "--date",
+        dest="run_date",
+        help="Reference date in YYYY-MM-DD format. Defaults to today in the configured timezone.",
+    )
+    return parser
+
+
+def resolve_run_date(run_date: str | None, timezone_name: str, now: datetime | None = None) -> date:
+    if run_date:
+        return datetime.strptime(run_date, "%Y-%m-%d").date()
+
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        return date.today()
+    current = now or datetime.now(zone)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=zone)
+    return current.astimezone(zone).date()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    pipeline = DailyPipeline(config=load_config(args.config_path) if args.config_path else None)
+
+    if args.command == "init-db":
+        pipeline.init_db()
+        print(f"Initialized database at {pipeline.storage.db_path}")
+        return 0
+
+    run_date = resolve_run_date(getattr(args, "run_date", None), pipeline.config.timezone)
+    if args.command == "run-daily":
+        report = pipeline.run(run_date)
+        if getattr(args, "send_email", False):
+            email_settings = pipeline.config.report_email
+            if not email_settings.is_configured():
+                print(
+                    "Email delivery requested, but SMTP settings are not configured.",
+                    file=sys.stderr,
+                )
+                return 2
+            try:
+                report_markdown = pipeline.storage.load_delivery_report_markdown(run_date)
+                send_report_email(report, report_markdown, email_settings)
+            except Exception as exc:
+                print(f"Failed to send report email: {exc}", file=sys.stderr)
+                return 1
+        print(f"Completed run for {report.run_date.isoformat()} with {report.triggered_count} triggered tickers.")
+        return 0
+
+    if args.command == "show-report":
+        print(pipeline.storage.load_report_markdown(run_date))
+        return 0
+
+    if args.command == "preflight":
+        summary = pipeline.preflight()
+        print("\n".join(summary.to_lines()))
+        return 0 if summary.ready else 1
+
+    if args.command == "cleanup-data":
+        retention = pipeline.config.retention
+        summary = pipeline.storage.cleanup_retention(
+            reference_date=run_date,
+            report_days=retention.report_days,
+            raw_payload_days=retention.raw_payload_days,
+            daily_price_days=retention.daily_price_days,
+            official_event_days=retention.official_event_days,
+            fundamental_days=retention.fundamental_days,
+            macro_days=retention.macro_days,
+            run_metadata_days=retention.run_metadata_days,
+            social_raw_payload_days=retention.social_raw_payload_days,
+            social_post_days=retention.social_post_days,
+            social_snapshot_days=retention.social_snapshot_days,
+        )
+        print("\n".join(summary.to_lines()))
+        return 0
+
+    parser.error(f"Unknown command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
