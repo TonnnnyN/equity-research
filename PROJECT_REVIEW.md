@@ -107,6 +107,26 @@ P0 还差一块没做:**SEC 财报缓存接入**。schema 已建好(`filing_summ
 
 要不要继续做财报缓存?这是 P0 闭环的最后一块。
 
+### 0.6 架构决策:subagent 用在哪个 skill
+
+经讨论确认两个 skill 的处理方式**不对称**:
+
+| Skill | 是否在 SKILL.md 里强制主 agent 开 subagent | 理由 |
+|---|---|---|
+| `market-sentiment-research` | **不开**(直接读 DeepSeek 已经压缩好的结构化结果) | 单股深度,帖子量可控;DeepSeek 已经做完第一层压缩(每帖 ~150 字),50 帖大约 7-8KB,主 agent 直接读不撑爆,多一层 subagent 反而增加延迟和调试成本 |
+| `us-smallmid-dislocation` | **强制开**(SKILL.md 待补充强制指令) | 宽表扫多股,总帖子量随股票数线性增长,容易撑爆;subagent 天然适合"每只票各吃各的帖子并行返回小结"的并发场景 |
+
+#### TODO:更新 `skills/us-smallmid-dislocation/SKILL.md` 强制 subagent 段落
+
+待定细节(等 DeepSeek 跑过一周有真实数据再决定):
+- **开几个 subagent**:每只候选股一个?还是按 sector / size 分组?候选股一般 10-30 只
+- **每个 subagent 读多少帖**:每只票上限多少帖给 subagent?(比如 50 帖封顶)
+- **subagent 用什么模型**:Haiku(快、便宜)还是 Sonnet(理解更深)?
+- **subagent 输出格式**:JSON 数组(机读)还是中文叙事段(主 agent 直接拼装)?
+- **是否并发执行**:并发 N 个 subagent 同时跑,还是串行?(SKILL.md 里需要明确告诉主 agent 用并行 tool call)
+
+实施时机:**等步骤 A-C 跑通、积累一周数据后再做**——届时能根据真实帖子量级和 DeepSeek 输出质量来定上面这些数字,免得拍脑袋定的参数后期返工。
+
 ---
 
 ## 一、项目概览
