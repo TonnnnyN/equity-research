@@ -24,6 +24,7 @@ class SentimentJudgement:
     sentiment: str
     confidence: float
     one_line_summary: str
+    is_stub: bool = False
 
 
 class SentimentJudge(Protocol):
@@ -47,6 +48,7 @@ class StubSentimentJudge:
                 sentiment="neutral",
                 confidence=0.5,
                 one_line_summary=p.title[:120],
+                is_stub=True,
             )
             for p in posts
         ]

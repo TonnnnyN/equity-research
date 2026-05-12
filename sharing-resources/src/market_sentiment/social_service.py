@@ -150,7 +150,7 @@ class SocialSignalService:
                 logger.warning(f"judge_batch failed for {ticker}: {exc}. Returning posts with unknown sentiment.")
                 new_judgements = []
 
-            # Write new judgments to cache
+            # Write new judgments to cache (skip stub judgments)
             if new_judgements:
                 cache_rows = [
                     SocialPostCacheRow(
@@ -166,8 +166,10 @@ class SocialSignalService:
                         ingested_at=now,
                     )
                     for j in new_judgements
+                    if not j.is_stub
                 ]
-                self.storage.upsert_social_post_cache(cache_rows)
+                if cache_rows:
+                    self.storage.upsert_social_post_cache(cache_rows)
                 logger.debug(f"Judged {len(new_judgements)} new posts for {ticker}")
             else:
                 logger.debug(f"No judgments obtained for {len(new_posts)} new posts for {ticker}")

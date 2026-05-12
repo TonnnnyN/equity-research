@@ -12,7 +12,7 @@ from market_sentiment.social_service import SocialSignalService
 from market_sentiment.sources.base import SourcePayload
 from market_sentiment.sources.social_base import SocialProvider
 from market_sentiment.storage import Storage
-from market_sentiment.subagent_sentiment import PostToJudge, SentimentJudge, SentimentJudgement
+from market_sentiment.subagent_sentiment import PostToJudge, SentimentJudge, SentimentJudgement, StubSentimentJudge
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "watchlist.toml"
@@ -459,3 +459,145 @@ class SocialCacheIntegrationTests(TestCase):
         # Verify cache is empty (no judgments were cached)
         cached = self.storage.get_social_posts_for_ticker("AAPL")
         self.assertEqual(len(cached), 0)
+
+    def test_stub_judge_does_not_pollute_cache(self) -> None:
+        """Stub judge outputs are not written to cache, only to output."""
+        config = load_config(str(CONFIG_PATH))
+        config.social.enabled = True
+        config.social.providers = ["reddit"]
+        config.social.min_recent_posts = 1
+        config.social.min_unique_authors = 1
+        security = Security(
+            ticker="AAPL",
+            name="Apple Inc",
+            layer=config.securities[0].layer,
+            benchmark="QQQ",
+        )
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+        )
+
+        posts = [make_post(f"post-{i}", i * 2) for i in range(3)]
+
+        # First collect with stub judge
+        service = SocialSignalService(
+            config=config,
+            http=None,  # type: ignore[arg-type]
+            storage=self.storage,
+            providers=[
+                StubProvider(
+                    "reddit",
+                    SourcePayload(
+                        data=posts,
+                        status=SourceStatus(source="reddit", success=True, message="ok"),
+                    ),
+                ),
+            ],
+            sentiment_judge=StubSentimentJudge(),
+        )
+
+        result = service.collect(context, date(2026, 5, 12))
+
+        # Output should still have posts with neutral sentiment
+        self.assertGreater(len(result.posts), 0)
+        for post in result.posts:
+            self.assertEqual(post.sentiment, "neutral")
+            self.assertEqual(post.confidence, 0.5)
+
+        # But cache should be empty (stub judgments not persisted)
+        cached = self.storage.get_social_posts_for_ticker("AAPL")
+        self.assertEqual(len(cached), 0)
+
+    def test_real_judge_writes_cache_after_stub_ran(self) -> None:
+        """After stub ran, real judge can write its results to cache."""
+        config = load_config(str(CONFIG_PATH))
+        config.social.enabled = True
+        config.social.providers = ["reddit"]
+        config.social.min_recent_posts = 1
+        config.social.min_unique_authors = 1
+        security = Security(
+            ticker="AAPL",
+            name="Apple Inc",
+            layer=config.securities[0].layer,
+            benchmark="QQQ",
+        )
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+        )
+
+        posts = [make_post(f"post-{i}", i * 2) for i in range(3)]
+
+        # First collect with stub judge
+        service_1 = SocialSignalService(
+            config=config,
+            http=None,  # type: ignore[arg-type]
+            storage=self.storage,
+            providers=[
+                StubProvider(
+                    "reddit",
+                    SourcePayload(
+                        data=posts,
+                        status=SourceStatus(source="reddit", success=True, message="ok"),
+                    ),
+                ),
+            ],
+            sentiment_judge=StubSentimentJudge(),
+        )
+        result_1 = service_1.collect(context, date(2026, 5, 12))
+
+        # Verify stub output is neutral
+        self.assertGreater(len(result_1.posts), 0)
+        for post in result_1.posts:
+            self.assertEqual(post.sentiment, "neutral")
+
+        # Verify cache is empty
+        cached_1 = self.storage.get_social_posts_for_ticker("AAPL")
+        self.assertEqual(len(cached_1), 0)
+
+        # Second collect with real judge (MockJudge, is_stub=False)
+        mock_judge = MockJudge()
+        service_2 = SocialSignalService(
+            config=config,
+            http=None,  # type: ignore[arg-type]
+            storage=self.storage,
+            providers=[
+                StubProvider(
+                    "reddit",
+                    SourcePayload(
+                        data=posts,
+                        status=SourceStatus(source="reddit", success=True, message="ok"),
+                    ),
+                ),
+            ],
+            sentiment_judge=mock_judge,
+        )
+        result_2 = service_2.collect(context, date(2026, 5, 12))
+
+        # Judge should be called again (cache was empty)
+        self.assertEqual(len(mock_judge.calls), 1)
+        self.assertEqual(len(mock_judge.calls[0]), 3)
+
+        # Output should now have bull sentiment (from MockJudge)
+        self.assertGreater(len(result_2.posts), 0)
+        for post in result_2.posts:
+            self.assertEqual(post.sentiment, "bull")
+
+        # Cache should now contain bull judgments
+        cached_2 = self.storage.get_social_posts_for_ticker("AAPL")
+        self.assertEqual(len(cached_2), 3)
+        for cached_post in cached_2:
+            self.assertEqual(cached_post.sentiment, "bull")
