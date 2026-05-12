@@ -1,7 +1,111 @@
 # 市场情绪感知项目 —— 深度评审报告
 
-> 生成日期：2026-05-12
-> 基于代码版本：`0b64e9c`（Split project into separate agent skills）
+> 初版生成日期：2026-05-12
+> 最新更新：2026-05-12（P0 step 1-3 完成）
+> 当前代码版本：`9dd26b2`（Add DeepSeek-backed sentiment judge）
+
+---
+
+## 零、改造进度（最新）
+
+### 0.1 已完成的 commit
+
+| Commit | 标题 | 内容要点 | 测试 |
+|---|---|---|---|
+| `0b64e9c` | 初始版本 | 双 skill 分离后的基线 | 76/76 |
+| `ea14626` | PROJECT_REVIEW.md | 本评审文档初版 | 76/76 |
+| `4acbeec` | P0 step 1:缓存层 + 清理脚本 | 新增 `social_post_cache` / `filing_summary_cache` 两张 SQLite 表 + 索引 + CRUD + 独立 `purge_caches.py` 清理脚本 | 82/82 |
+| `1b8195f` | P0 step 2:pipeline 接入缓存 + 子代理接口 | `social_service.py` 抓帖前先查缓存,只把新帖送给情绪判官;输出剥 body 全文;judge 异常 graceful 降级 | 88/88 |
+| `7f2e02b` | P0 step 2.5:stub 不污染缓存 | 给 `SentimentJudgement` 加 `is_stub` 字段,stub 输出不写缓存,确保未来真 LLM 不被 `INSERT OR IGNORE` 锁死 | 90/90 |
+| `9dd26b2` | P0 step 3:DeepSeek 情绪判官 | `DeepSeekSentimentJudge` 调用 deepseek-chat API,批量 20 帖/次,纯 stdlib `urllib`,失败全 graceful;按 `DEEPSEEK_API_KEY` 环境变量自动切换真/假判官 | 105/105 |
+
+### 0.2 P0 当前数据流(已生效)
+
+```
+触发检测(异常跌幅)
+   ↓
+社交源抓帖(Reddit / Discourse / X)
+   ↓
+按 (source, post_id) 查 social_post_cache(14 天窗口)
+   ├── 已缓存 → 直接复用结构化判决,不再调 LLM
+   └── 未缓存 → 攒批 20 帖
+                  ↓
+              DeepSeekSentimentJudge.judge_batch()
+                  ├── 设了 DEEPSEEK_API_KEY → DeepSeek 真判
+                  └── 没设 → StubSentimentJudge(neutral 占位,不写缓存)
+                  ↓
+              得到 SentimentJudgement(sentiment / confidence / one_line_summary / is_stub)
+                  ↓
+              is_stub=False 的写入 social_post_cache(INSERT OR IGNORE,情绪锁死)
+   ↓
+合并"缓存里的旧帖 + 本次新判的帖"
+   ↓
+**剥掉 body 全文**,只保留 title / sentiment / confidence / 摘要 / 时间 / 互动数
+   ↓
+作为结构化 social_snapshot 喂给主 agent(Claude / Codex)
+   ↓
+主 agent 看时间线("过去 5 天 bear 占比、新出现的 bear 帖")自行判断
+   ↓
+进入打分流程(scoring.py)
+```
+
+### 0.3 已经被解决的问题
+
+参照本文第五章的问题清单,目前已闭环:
+- ✅ **5.1 上下文撑爆**:body 全文不再进主 agent;判过的帖不再二次读
+- ✅ **5.2 重复读取**:14 天滚动窗口内的帖子缓存复用;清理脚本 cron 跑
+- ✅ **5.3 LLM 失败炸 pipeline**:DeepSeek 任意失败都返回 [],上层走 unknown 路径
+- ✅ **2.5 stub 污染缓存**:`is_stub=True` 跳过 upsert,真 LLM 可无障碍写入
+
+### 0.4 已新增的文件
+
+```
+sharing-resources/
+├── scripts/
+│   └── purge_caches.py            # 新增:独立清理脚本(cron 用,不进 SKILL.md)
+├── src/market_sentiment/
+│   └── subagent_sentiment.py      # 新增:PostToJudge / SentimentJudgement /
+│                                  #   StubSentimentJudge / DeepSeekSentimentJudge /
+│                                  #   build_default_sentiment_judge()
+├── secrets/
+│   └── market_sentiment.secrets.example.sh  # 改动:加 DEEPSEEK_API_KEY 行
+└── tests/
+    ├── test_cache_storage.py              # 新增:6 测试
+    ├── test_social_cache_integration.py   # 新增:7 测试
+    └── test_deepseek_judge.py             # 新增:15 测试
+```
+
+修改的现有文件:`models.py`(加 2 个 dataclass)、`storage.py`(加 2 表 + 索引 + 6 个 CRUD)、`social_service.py`(接缓存 + 判官)、`pipeline.py`(注入工厂)。**未动**:`sources/*`、`scoring.py`、`triggers.py`、`reporting.py`、`social_rebound.py`。
+
+### 0.5 你现在要做的事(按优先级)
+
+#### 步骤 A:配置 DeepSeek 密钥并实跑一次
+1. 编辑 `sharing-resources/secrets/market_sentiment.secrets.sh`,把 `DEEPSEEK_API_KEY` 填上真实 key(没的话去 platform.deepseek.com 申请)
+2. `source sharing-resources/secrets/market_sentiment.secrets.sh`
+3. 跑一次 preflight:`market-sentiment --config config/watchlist.toml preflight`
+4. 跑一次 daily:`market-sentiment --config config/watchlist.toml run-daily`
+5. 看生成的 `data/reports/<date>/report.md`,确认社交段落的 sentiment 是真的有 bull/bear 区分(不再是清一色 neutral)
+
+#### 步骤 B:观察一周,验证 DeepSeek 判得准不准
+- 抽样 20 条被判 bear 的帖子人工对照,看判得对不对
+- 如果不准,改 `DeepSeekSentimentJudge` 里的 prompt(`_build_prompt()` 函数,见 subagent_sentiment.py)
+- 不准的几种典型可能:讽刺帖被判 bull、回踩帖被判 bear、内容空的帖被强行打标签
+
+#### 步骤 C:跑 cron 跑清理脚本
+建议添加 crontab 一行:
+```
+0 3 * * * cd /Users/votee_tommy/市场情绪 && python sharing-resources/scripts/purge_caches.py --social-days 14
+```
+每天凌晨 3 点清掉 14 天前的社交缓存。财报缓存默认不清(`--filing-days 0`),手动决定何时清。
+
+#### 步骤 D:决定下一步走 P1 还是先继续 P0 的财报缓存
+P0 还差一块没做:**SEC 财报缓存接入**。schema 已建好(`filing_summary_cache`),但 `sources/sec.py` 还没接入缓存逻辑,每次触发还是会重拉 10-Q/10-K/8-K。同样要做的事:
+- 抓 filing 前先查 `get_filing_summaries_for_ticker(ticker)`
+- 已有 `accession_number` 跳过详情拉取,直接复用 summary
+- 用 DeepSeek 摘要 filing 内容(可选——or 直接用 SEC 已有结构化数据)
+- 区分 10-Q/K(长期缓存)和 8-K(每次重拉 list,内容缓存)
+
+要不要继续做财报缓存?这是 P0 闭环的最后一块。
 
 ---
 
