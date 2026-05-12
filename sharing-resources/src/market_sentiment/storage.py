@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import shutil
 
-from market_sentiment.models import DailyRunReport, FundamentalSnapshot, MacroObservation, OfficialEvent, PriceBar, SocialPost, SocialSnapshot
+from market_sentiment.models import DailyRunReport, FilingSummaryCacheRow, FundamentalSnapshot, MacroObservation, OfficialEvent, PriceBar, SocialPost, SocialPostCacheRow, SocialSnapshot
 from market_sentiment.sources.social_base import SOCIAL_PROVIDER_NAMES
 
 
@@ -140,6 +140,40 @@ CREATE TABLE IF NOT EXISTS scorecards (
     payload_json TEXT NOT NULL,
     PRIMARY KEY (run_date, ticker)
 );
+
+CREATE TABLE IF NOT EXISTS social_post_cache (
+    source TEXT NOT NULL,
+    post_id TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    posted_at TEXT NOT NULL,
+    title TEXT NOT NULL,
+    sentiment TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    one_line_summary TEXT NOT NULL,
+    engagement_score REAL NOT NULL,
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY (source, post_id, ticker)
+);
+
+CREATE INDEX IF NOT EXISTS idx_social_post_cache_ticker_posted_at
+  ON social_post_cache(ticker, posted_at DESC);
+
+CREATE TABLE IF NOT EXISTS filing_summary_cache (
+    cik TEXT NOT NULL,
+    accession_number TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    form_type TEXT NOT NULL,
+    filed_at TEXT NOT NULL,
+    period_end TEXT,
+    summary TEXT NOT NULL,
+    sentiment TEXT NOT NULL,
+    key_metrics_json TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY (cik, accession_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_filing_summary_cache_ticker_form_type
+  ON filing_summary_cache(ticker, form_type);
 """
 
 
@@ -356,6 +390,137 @@ class Storage:
                 ),
             )
             conn.commit()
+
+    def upsert_social_post_cache(self, posts: list[SocialPostCacheRow]) -> None:
+        if not posts:
+            return
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO social_post_cache
+                (source, post_id, ticker, posted_at, title, sentiment, confidence,
+                 one_line_summary, engagement_score, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        post.source,
+                        post.post_id,
+                        post.ticker,
+                        post.posted_at.isoformat(),
+                        post.title[:200],
+                        post.sentiment,
+                        post.confidence,
+                        post.one_line_summary[:120],
+                        post.engagement_score,
+                        post.ingested_at.isoformat(),
+                    )
+                    for post in posts
+                ],
+            )
+            conn.commit()
+
+    def get_social_posts_for_ticker(self, ticker: str, since: datetime | None = None) -> list[SocialPostCacheRow]:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            if since:
+                rows = conn.execute(
+                    """
+                    SELECT source, post_id, ticker, posted_at, title, sentiment, confidence,
+                           one_line_summary, engagement_score, ingested_at
+                    FROM social_post_cache
+                    WHERE ticker = ? AND posted_at >= ?
+                    ORDER BY posted_at DESC
+                    """,
+                    (ticker, since.isoformat()),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT source, post_id, ticker, posted_at, title, sentiment, confidence,
+                           one_line_summary, engagement_score, ingested_at
+                    FROM social_post_cache
+                    WHERE ticker = ?
+                    ORDER BY posted_at DESC
+                    """,
+                    (ticker,),
+                ).fetchall()
+            return [_row_to_social_post_cache(row) for row in rows]
+
+    def upsert_filing_summary_cache(self, filings: list[FilingSummaryCacheRow]) -> None:
+        if not filings:
+            return
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO filing_summary_cache
+                (cik, accession_number, ticker, form_type, filed_at, period_end,
+                 summary, sentiment, key_metrics_json, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        filing.cik,
+                        filing.accession_number,
+                        filing.ticker,
+                        filing.form_type,
+                        filing.filed_at.isoformat(),
+                        filing.period_end.isoformat() if filing.period_end else None,
+                        filing.summary,
+                        filing.sentiment,
+                        filing.key_metrics_json,
+                        filing.ingested_at.isoformat(),
+                    )
+                    for filing in filings
+                ],
+            )
+            conn.commit()
+
+    def get_filing_summaries_for_ticker(
+        self, ticker: str, form_types: list[str] | None = None
+    ) -> list[FilingSummaryCacheRow]:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            if form_types:
+                placeholders = ",".join(["?"] * len(form_types))
+                rows = conn.execute(
+                    f"""
+                    SELECT cik, accession_number, ticker, form_type, filed_at, period_end,
+                           summary, sentiment, key_metrics_json, ingested_at
+                    FROM filing_summary_cache
+                    WHERE ticker = ? AND form_type IN ({placeholders})
+                    ORDER BY filed_at DESC
+                    """,
+                    [ticker] + form_types,
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT cik, accession_number, ticker, form_type, filed_at, period_end,
+                           summary, sentiment, key_metrics_json, ingested_at
+                    FROM filing_summary_cache
+                    WHERE ticker = ?
+                    ORDER BY filed_at DESC
+                    """,
+                    (ticker,),
+                ).fetchall()
+            return [_row_to_filing_summary_cache(row) for row in rows]
+
+    def purge_old_social_posts(self, cutoff: datetime) -> int:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rowcount = conn.execute(
+                "DELETE FROM social_post_cache WHERE ingested_at < ?",
+                (cutoff.isoformat(),),
+            ).rowcount
+            conn.commit()
+            return rowcount
+
+    def purge_old_filing_summaries(self, cutoff: datetime) -> int:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rowcount = conn.execute(
+                "DELETE FROM filing_summary_cache WHERE ingested_at < ?",
+                (cutoff.isoformat(),),
+            ).rowcount
+            conn.commit()
+            return rowcount
 
     def save_report(self, report: DailyRunReport) -> tuple[Path, Path]:
         report_dir = self.data_dir / "reports" / report.run_date.isoformat()
@@ -705,6 +870,37 @@ def _cleanup_raw_directories(
             deleted.append(str(date_dir))
 
     return sorted(deleted)
+
+
+def _row_to_social_post_cache(row: tuple) -> SocialPostCacheRow:
+    return SocialPostCacheRow(
+        source=row[0],
+        post_id=row[1],
+        ticker=row[2],
+        posted_at=datetime.fromisoformat(row[3]),
+        title=row[4],
+        sentiment=row[5],
+        confidence=row[6],
+        one_line_summary=row[7],
+        engagement_score=row[8],
+        ingested_at=datetime.fromisoformat(row[9]),
+    )
+
+
+def _row_to_filing_summary_cache(row: tuple) -> FilingSummaryCacheRow:
+    period_end = datetime.fromisoformat(row[5]) if row[5] else None
+    return FilingSummaryCacheRow(
+        cik=row[0],
+        accession_number=row[1],
+        ticker=row[2],
+        form_type=row[3],
+        filed_at=datetime.fromisoformat(row[4]),
+        period_end=period_end,
+        summary=row[6],
+        sentiment=row[7],
+        key_metrics_json=row[8],
+        ingested_at=datetime.fromisoformat(row[9]),
+    )
 
 
 def render_markdown_report(report: DailyRunReport) -> str:

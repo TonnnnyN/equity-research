@@ -341,6 +341,34 @@ class DailyRunReport:
         )
 
 
+@dataclass(slots=True)
+class SocialPostCacheRow:
+    source: str
+    post_id: str
+    ticker: str
+    posted_at: datetime
+    title: str
+    sentiment: str
+    confidence: float
+    one_line_summary: str
+    engagement_score: float
+    ingested_at: datetime
+
+
+@dataclass(slots=True)
+class FilingSummaryCacheRow:
+    cik: str
+    accession_number: str
+    ticker: str
+    form_type: str
+    filed_at: datetime
+    summary: str
+    sentiment: str
+    key_metrics_json: str
+    ingested_at: datetime
+    period_end: datetime | None = None
+
+
 def _serialize(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _serialize(item) for key, item in value.items()}
