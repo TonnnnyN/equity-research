@@ -7,6 +7,7 @@ export ALPHAVANTAGE_API_KEY=""
 export FRED_API_KEY=""
 export EIA_API_KEY=""
 export SEC_USER_AGENT="market-sentiment/0.1 (local research use; contact@example.com)"
+export DEEPSEEK_API_KEY=""
 
 export SOCIAL_ENABLED="false"
 export X_ENABLED="false"

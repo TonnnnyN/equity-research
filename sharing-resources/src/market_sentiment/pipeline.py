@@ -21,7 +21,7 @@ from market_sentiment.review_packets import build_review_packet, render_review_q
 from market_sentiment.runtime_preflight import PreflightSummary, build_preflight_summary
 from market_sentiment.scoring import build_scorecard, classify_event_tag
 from market_sentiment.social_service import SocialSignalService
-from market_sentiment.subagent_sentiment import StubSentimentJudge
+from market_sentiment.subagent_sentiment import build_default_sentiment_judge
 from market_sentiment.sources.alpha_vantage import AlphaVantageClient
 from market_sentiment.sources.base import SourcePayload
 from market_sentiment.sources.eia import EiaClient
@@ -49,7 +49,7 @@ class DailyPipeline:
             config=self.config,
             http=self.http,
             storage=self.storage,
-            sentiment_judge=StubSentimentJudge(),
+            sentiment_judge=build_default_sentiment_judge(),
         )
 
     def init_db(self) -> None:
