@@ -1055,3 +1055,95 @@ eia_natural_gas_route = "/v2/natural-gas/pri/sum/data/"
             self.assertIn("Failed to load SEC ticker map", facts_result.status.message)
             self.assertNotIn("No CIK mapping", events_result.status.message)
             self.assertNotIn("No CIK mapping", facts_result.status.message)
+
+    def test_sec_filing_cache_first_run_writes_all(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payloads = {
+                "https://www.sec.gov/files/company_tickers_exchange.json": {
+                    "data": [[789019, "MICROSOFT CORP", "MSFT", "NASDAQ"]],
+                },
+                "https://data.sec.gov/submissions/CIK0000789019.json": {
+                    "filings": {
+                        "recent": {
+                            "form": ["10-K", "10-Q", "8-K"],
+                            "filingDate": ["2026-02-20", "2026-01-15", "2026-03-10"],
+                            "accessionNumber": ["0000789019-26-000001", "0000789019-26-000002", "0000789019-26-000003"],
+                            "acceptanceDateTime": ["20260220090000", "20260115100000", "20260310110000"],
+                            "primaryDocument": ["msft_10k.htm", "msft_10q.htm", "msft_8k.htm"],
+                            "primaryDocDescription": ["Annual report", "Quarterly report", "Current report"],
+                        }
+                    }
+                },
+            }
+            http = RoutingFakeHttpClient(payloads)
+            storage = Storage(Path(tmp) / "state.db", Path(tmp))
+            storage.init_db()
+            client = SecClient(http, storage)
+
+            result = client.fetch_recent_events("MSFT", date(2026, 3, 26))
+
+            self.assertTrue(result.status.success)
+            self.assertEqual(len(result.data), 3)
+            cached = storage.get_filing_summaries_for_ticker("MSFT")
+            self.assertEqual(len(cached), 3)
+            self.assertIn("cache_hit=0/3", result.status.message)
+
+    def test_sec_filing_cache_second_run_dedupes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            payloads = {
+                "https://www.sec.gov/files/company_tickers_exchange.json": {
+                    "data": [[789019, "MICROSOFT CORP", "MSFT", "NASDAQ"]],
+                },
+                "https://data.sec.gov/submissions/CIK0000789019.json": {
+                    "filings": {
+                        "recent": {
+                            "form": ["10-K", "10-Q", "8-K"],
+                            "filingDate": ["2026-02-20", "2026-01-15", "2026-03-10"],
+                            "accessionNumber": ["0000789019-26-000001", "0000789019-26-000002", "0000789019-26-000003"],
+                            "acceptanceDateTime": ["20260220090000", "20260115100000", "20260310110000"],
+                            "primaryDocument": ["msft_10k.htm", "msft_10q.htm", "msft_8k.htm"],
+                            "primaryDocDescription": ["Annual report", "Quarterly report", "Current report"],
+                        }
+                    }
+                },
+            }
+            http = RoutingFakeHttpClient(payloads)
+            storage = Storage(Path(tmp) / "state.db", Path(tmp))
+            storage.init_db()
+            client = SecClient(http, storage)
+
+            from market_sentiment.models import FilingSummaryCacheRow
+            storage.upsert_filing_summary_cache([
+                FilingSummaryCacheRow(
+                    cik="0000789019",
+                    accession_number="0000789019-26-000001",
+                    ticker="MSFT",
+                    form_type="10-K",
+                    filed_at=datetime(2026, 2, 20, tzinfo=timezone.utc),
+                    period_end=None,
+                    summary="Annual report",
+                    sentiment="unknown",
+                    key_metrics_json="{}",
+                    ingested_at=datetime.now(timezone.utc),
+                ),
+                FilingSummaryCacheRow(
+                    cik="0000789019",
+                    accession_number="0000789019-26-000002",
+                    ticker="MSFT",
+                    form_type="10-Q",
+                    filed_at=datetime(2026, 1, 15, tzinfo=timezone.utc),
+                    period_end=None,
+                    summary="Quarterly report",
+                    sentiment="unknown",
+                    key_metrics_json="{}",
+                    ingested_at=datetime.now(timezone.utc),
+                ),
+            ])
+
+            result = client.fetch_recent_events("MSFT", date(2026, 3, 26))
+
+            self.assertTrue(result.status.success)
+            self.assertEqual(len(result.data), 3)
+            cached = storage.get_filing_summaries_for_ticker("MSFT")
+            self.assertEqual(len(cached), 3)
+            self.assertIn("cache_hit=2/3", result.status.message)

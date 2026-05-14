@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 
 from market_sentiment.http import HttpClient
-from market_sentiment.models import FundamentalSnapshot, OfficialEvent, SourceStatus
+from market_sentiment.models import FilingSummaryCacheRow, FundamentalSnapshot, OfficialEvent, SourceStatus
 from market_sentiment.sources.base import SourcePayload
 from market_sentiment.storage import Storage
 
@@ -75,7 +75,7 @@ class SecClient:
         acceptance_datetimes = recent.get("acceptanceDateTime", [])
         primary_documents = recent.get("primaryDocument", [])
         descriptions = recent.get("primaryDocDescription", [])
-        items = zip(
+        items = list(zip(
             forms,
             filing_dates,
             accession_numbers,
@@ -83,7 +83,7 @@ class SecClient:
             primary_documents,
             descriptions,
             strict=False,
-        )
+        ))
         events: list[OfficialEvent] = []
         cik_numeric = str(int(cik))
         for form_type, filing_date, accession_number, acceptance_datetime, primary_document, description in items:
@@ -104,11 +104,31 @@ class SecClient:
                     ingested_at=ingested_at,
                 )
             )
+        cached_rows = self._storage.get_filing_summaries_for_ticker(ticker)
+        cached_keys = {row.accession_number for row in cached_rows}
+        new_rows = [
+            FilingSummaryCacheRow(
+                cik=cik,
+                accession_number=accession_number,
+                ticker=ticker,
+                form_type=form_type,
+                filed_at=datetime.strptime(filing_date, "%Y-%m-%d").replace(tzinfo=timezone.utc),
+                period_end=None,
+                summary=(description or f"{ticker} filed {form_type}").strip(),
+                sentiment="unknown",
+                key_metrics_json="{}",
+                ingested_at=ingested_at,
+            )
+            for form_type, filing_date, accession_number, _, _, description in items
+            if accession_number not in cached_keys
+        ]
+        self._storage.upsert_filing_summary_cache(new_rows)
+        hit_count = len(events) - len(new_rows)
         status = SourceStatus(
             source="sec",
             success=bool(events),
             partial=not bool(events),
-            message="ok" if events else "empty recent filings",
+            message=f"ok; cache_hit={hit_count}/{len(events)}" if events else "empty recent filings",
             payload_path=str(raw_path),
             source_url=safe_url,
             ingested_at=ingested_at,
