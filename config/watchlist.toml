@@ -39,10 +39,10 @@ social_snapshot_days = 180
 [social]
 enabled = true
 providers = ["reddit", "forum", "x"]
-lookback_hours = 72
+lookback_hours = 168
 baseline_days = 14
 max_posts_per_source = 150
-min_recent_posts = 10
+min_recent_posts = 6
 min_unique_authors = 5
 min_platform_count = 1
 max_author_share = 0.40

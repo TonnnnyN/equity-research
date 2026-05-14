@@ -9,8 +9,24 @@ from pathlib import Path
 from unittest import TestCase
 
 from market_sentiment.config import load_config
-from market_sentiment.models import FundamentalSnapshot, MacroObservation, OptionSnapshot, OfficialEvent, PriceBar, SourceStatus
+from market_sentiment.models import (
+    ActionState,
+    Benchmark,
+    BucketScore,
+    EventTag,
+    FundamentalSnapshot,
+    Layer,
+    MacroObservation,
+    OptionSnapshot,
+    OfficialEvent,
+    PipelineContext,
+    PriceBar,
+    Security,
+    SourceStatus,
+    TriggerResult,
+)
 from market_sentiment.pipeline import DailyPipeline
+from market_sentiment.scoring import build_scorecard
 from market_sentiment.sources.base import SourcePayload
 from market_sentiment.storage import Storage
 
@@ -525,3 +541,73 @@ class PipelineTests(TestCase):
             self.assertEqual(statuses[-1].source, "daily_prices_cache")
             self.assertTrue(statuses[-1].partial)
             self.assertIn("using cached prices through", statuses[-1].message)
+
+    def test_pipeline_graceful_degradation_when_all_sources_fail(self) -> None:
+        """
+        Test that the pipeline degrades gracefully when ALL data sources fail.
+        Constructs a PipelineContext with empty data on all fetched fields and all-failed SourceStatus,
+        then calls build_scorecard and asserts the result is safe (data_insufficient=True, state is WATCH/REJECT).
+        """
+        run_date = date(2026, 3, 26)
+
+        # Minimal security for context construction
+        security = Security(
+            ticker="TEST",
+            name="Test Ticker",
+            layer=Layer.AI_APPLICATIONS,
+            benchmark="QQQ"
+        )
+
+        # All sources have failed
+        source_statuses = [
+            SourceStatus(source="alpha_vantage", success=False, partial=True, message="rate limited"),
+            SourceStatus(source="stooq", success=False, partial=True, message="connection timeout"),
+            SourceStatus(source="sec_events", success=False, partial=True, message="API error"),
+            SourceStatus(source="sec_companyfacts", success=False, partial=True, message="not found"),
+            SourceStatus(source="fred", success=False, partial=True, message="service unavailable"),
+            SourceStatus(source="eia", success=False, partial=True, message="network error"),
+            SourceStatus(source="reddit", success=False, partial=True, message="fetch failed"),
+        ]
+
+        # Construct context with empty data on all fields
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],  # No price data
+            benchmark_prices=[],  # No benchmark data
+            official_events=[],  # No SEC events
+            fundamentals=None,  # No company facts
+            macro=[],  # No macro data
+            source_statuses=source_statuses,
+            social_snapshot=None,  # No social data
+            social_posts_sample=[],
+            social_source_statuses=[],
+            options_snapshot=None,
+            options_source_statuses=[],
+        )
+
+        # Trigger with no actual trigger (not triggered)
+        trigger = TriggerResult(triggered=False, reasons=[])
+
+        # Peer contexts (empty for simplicity)
+        peer_contexts = []
+
+        # Build scorecard and check graceful degradation
+        scorecard = build_scorecard(
+            run_date=run_date,
+            context=context,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=peer_contexts,
+        )
+
+        # Key assertions for graceful degradation
+        self.assertTrue(scorecard.data_insufficient, "Should mark data as insufficient when all sources fail")
+        self.assertIn(
+            scorecard.state,
+            (ActionState.WATCH, ActionState.REJECT),
+            "State should be WATCH or REJECT when data is insufficient"
+        )
+        # Should not have crashed or raised an exception
+        self.assertIsNotNone(scorecard)
+        self.assertEqual(scorecard.security.ticker, "TEST")

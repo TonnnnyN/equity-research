@@ -94,10 +94,10 @@ class SocialConfig:
     enabled: bool = False
     providers: list[str] = field(default_factory=lambda: list(SOCIAL_PROVIDER_NAMES))
     provider_timeout_seconds: float = 20.0
-    lookback_hours: int = 72
+    lookback_hours: int = 168
     baseline_days: int = 14
     max_posts_per_source: int = 150
-    min_recent_posts: int = 10
+    min_recent_posts: int = 6
     min_unique_authors: int = 5
     min_platform_count: int = 1
     max_author_share: float = 0.40
@@ -445,7 +445,7 @@ def _load_social_config(social_block: dict) -> SocialConfig:
         ),
         lookback_hours=_parse_non_negative_int(
             _first_non_empty(os.environ.get("SOCIAL_LOOKBACK_HOURS"), social_block.get("lookback_hours")),
-            72,
+            168,
         ),
         baseline_days=_parse_non_negative_int(
             _first_non_empty(os.environ.get("SOCIAL_BASELINE_DAYS"), social_block.get("baseline_days")),
@@ -457,7 +457,7 @@ def _load_social_config(social_block: dict) -> SocialConfig:
         ),
         min_recent_posts=_parse_non_negative_int(
             _first_non_empty(os.environ.get("SOCIAL_MIN_RECENT_POSTS"), social_block.get("min_recent_posts")),
-            10,
+            6,
         ),
         min_unique_authors=_parse_non_negative_int(
             _first_non_empty(os.environ.get("SOCIAL_MIN_UNIQUE_AUTHORS"), social_block.get("min_unique_authors")),
