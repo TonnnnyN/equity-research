@@ -1,8 +1,8 @@
 # 市场情绪感知项目 —— 深度评审报告
 
 > 初版生成日期：2026-05-12
-> 最新更新：2026-05-14（0.9 新增：DeepSeek v4-flash 真验证 + 缓存盘点 + P0 收尾路线）
-> 当前代码版本：`9dd26b2` + SSL/v4-flash 补丁（本轮 commit）
+> 最新更新：2026-05-14（0.11 新增：P0 step 8 SEC filing 缓存接入完成）
+> 当前代码版本：`74a77dc`（Wire filing_summary_cache writes into SEC client）
 
 ---
 
@@ -408,6 +408,76 @@ bucket_scores:
 - **#8** `official_events` 列表从 8 降到 5 还是别的
 
 剩下的(#2/#3/#5/#7/#9/#10)等 0.10.1 + 0.10.2 跑通再回来定。
+
+---
+
+### 0.11 P0 step 8 完成(2026-05-14)—— SEC filing 缓存接入
+
+#### 0.11.1 干了什么
+
+**派工**:Haiku impl + Haiku review,串行执行,我做 orchestrator。
+
+**代码改动**(`sources/sec.py`,commit `74a77dc`):
+
+1. `fetch_recent_events` 在 events 列表构建后追加缓存写入逻辑:
+   - 先 `storage.get_filing_summaries_for_ticker(ticker)` 拉已缓存的 accession_number 集合
+   - 只把 **不在缓存里** 的 filing 构建成 `FilingSummaryCacheRow`
+   - 调 `storage.upsert_filing_summary_cache(new_rows)`,`INSERT OR IGNORE` 兜底
+2. `SourceStatus.message` 末尾追加 `"; cache_hit={hit}/{total}"`,review packet 里能直接看
+3. **副作用**:把 `items = zip(...)` 改成 `items = list(zip(...))`——因为 zip 是单次迭代器,新代码要二次遍历,不 list 化会导致缓存全空(review subagent 重点核对了这点)
+
+**未做(故意)**:
+- HTTP fetch 仍每次都打。submissions index 是"目前有哪些 filing"的唯一真源,必须每次拉
+- `summary` / `sentiment` / `key_metrics_json` 现在是占位(`event.title` / `"unknown"` / `"{}"`),等 Phase 2 加 LLM 总结再填
+- "命中缓存就跳过昂贵步骤"的收益要等 Phase 2 才显现;Phase 1 只是把持久化通道接通
+
+#### 0.11.2 测试
+
+新增 2 个用例在 `test_sources.py`:
+- `test_sec_filing_cache_first_run_writes_all`:首跑 3 条 filing,期望全部写入,message 含 `cache_hit=0/3`
+- `test_sec_filing_cache_second_run_dedupes`:预置 2 条缓存,期望只新写 1 条,message 含 `cache_hit=2/3`
+
+总测试:**107/107 通过**。
+
+#### 0.11.3 验过的事 + 没验的事
+
+| 检查项 | 结果 |
+|---|---|
+| 单测覆盖首跑/dedupe 路径 | ✅ |
+| 实跑 run-daily 看真实缓存填充 | ⊝ 本日 watchlist 无 ticker 触发,没看到 |
+| `social_post_cache` 在新 DeepSeek 下的填充 | ⊝ 同上,需要触发才能验 |
+
+#### 0.11.4 派工流程留档
+
+- impl subagent(haiku):按 orchestrator 写好的精确 spec(包括字段映射、命名、`zip→list` 提示)直接改,**不发挥**
+- review subagent(haiku):独立审计,按 A-F 6 类(正确性 / scope / 副作用 / 测试质量 / 边界 / pytest)逐项打分
+- 两个 subagent **并不互相对话**,只通过 orchestrator(我)中转结论
+- haiku 这次没翻车——前提是 orchestrator 把 spec 写得足够精确(字段、命名、行号都给到)。如果只给"实现 SEC 缓存"这种粗指令,haiku 大概率会发挥过头
+
+---
+
+### 0.12 下一步(2026-05-14 当前)
+
+#### 0.12.1 立即可做的
+
+| 任务 | 价值 | 工作量 | 注意点 |
+|---|---|---|---|
+| **P0 step 9:Alpha Vantage 价格缓存** | 高(25 次/天配额是最大风险) | 2-3 小时 | 参照 filing_summary_cache 模板,新建 `daily_price_cache(ticker, run_date, payload)` |
+| **临时降阈值跑一次 run-daily 验社交链路** | 中 | 30 分钟 | 把 `config/watchlist.toml` 里 `drawdown_10d` 从 -0.08 降到 -0.02 跑一次,看 social_rebound 是不是非零 + social_post_cache 是否写入真情绪;跑完恢复 |
+| **P1-1:社交配置缺失主动报警** | 中 | 1 小时 | Reddit 单 subreddit 挂会静默,导致 social_rebound 0;preflight 阶段直接 fail-fast 或 WARN |
+| **P1-3:数据缺失保底分调整** | 中 | 1 小时 | 把 fundamentals 缺数据保底分从 8 降到 4,sentiment 从 5 降到 3 |
+
+#### 0.12.2 推荐顺序
+
+1. **先做"临时降阈值实跑"**(0.5 小时)——把当前所有未真正验证的环节(DeepSeek→social_post_cache→social_rebound)一起跑通,这是最便宜的端到端验证手段。**不需要 subagent,直接改 watchlist.toml 跑一次再改回来**
+2. **然后做 P0 step 9 Alpha Vantage 缓存**(2-3 小时,派 haiku 双 subagent,模式同 step 8)
+3. **再做 P1-1 + P1-3**(快速改动,可一起派一个 haiku impl + 一个 review)
+
+#### 0.12.3 等用户决策的事(从第七章)
+
+- **#1** 单帖 body 截断字数(500-800 之间挑一个)
+- **#4** 数据缺失保底分给多少(P1-3 直接影响)
+- **#8** `official_events` 列表从 8 降到 5 还是别的
 
 ---
 
