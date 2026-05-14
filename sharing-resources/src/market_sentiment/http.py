@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import certifi
 from dataclasses import dataclass
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.error import HTTPError, URLError
@@ -32,7 +33,7 @@ class HttpResponse:
 class HttpClient:
     def __init__(self, user_agent: str) -> None:
         self._user_agent = user_agent
-        self._ssl_context = ssl.create_default_context()
+        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
 
     def get(
         self,

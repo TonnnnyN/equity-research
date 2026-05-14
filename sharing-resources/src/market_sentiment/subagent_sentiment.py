@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import certifi
 import json
 import logging
 import os
+import ssl
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -76,7 +78,7 @@ class DeepSeekSentimentJudge:
         self,
         api_key: str,
         *,
-        model: str = "deepseek-chat",
+        model: str = "deepseek-v4-flash",
         base_url: str = "https://api.deepseek.com",
         batch_size: int = 20,
         timeout_seconds: float = 30.0,
@@ -88,6 +90,7 @@ class DeepSeekSentimentJudge:
         self.batch_size = batch_size
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
+        self._ssl_context = ssl.create_default_context(cafile=certifi.where())
 
     def judge_batch(self, posts: list[PostToJudge]) -> list[SentimentJudgement]:
         """Judge a batch of posts, splitting into chunks if needed."""
@@ -166,6 +169,7 @@ class DeepSeekSentimentJudge:
                 {"role": "user", "content": user_msg},
             ],
             "response_format": {"type": "json_object"},
+            "thinking": {"type": "disabled"},
         }
 
         url = f"{self.base_url}/chat/completions"
@@ -182,7 +186,7 @@ class DeepSeekSentimentJudge:
         )
 
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(request, timeout=self.timeout_seconds, context=self._ssl_context) as response:
                 response_body = response.read().decode("utf-8")
                 response_json = json.loads(response_body)
                 # Extract the assistant message
