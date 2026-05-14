@@ -1,8 +1,8 @@
 # 市场情绪感知项目 —— 深度评审报告
 
 > 初版生成日期：2026-05-12
-> 最新更新：2026-05-12（P0 step 1-3 完成）
-> 当前代码版本：`9dd26b2`（Add DeepSeek-backed sentiment judge）
+> 最新更新：2026-05-14（0.9 新增：DeepSeek v4-flash 真验证 + 缓存盘点 + P0 收尾路线）
+> 当前代码版本：`9dd26b2` + SSL/v4-flash 补丁（本轮 commit）
 
 ---
 
@@ -18,6 +18,7 @@
 | `1b8195f` | P0 step 2:pipeline 接入缓存 + 子代理接口 | `social_service.py` 抓帖前先查缓存,只把新帖送给情绪判官;输出剥 body 全文;judge 异常 graceful 降级 | 88/88 |
 | `7f2e02b` | P0 step 2.5:stub 不污染缓存 | 给 `SentimentJudgement` 加 `is_stub` 字段,stub 输出不写缓存,确保未来真 LLM 不被 `INSERT OR IGNORE` 锁死 | 90/90 |
 | `9dd26b2` | P0 step 3:DeepSeek 情绪判官 | `DeepSeekSentimentJudge` 调用 deepseek-chat API,批量 20 帖/次,纯 stdlib `urllib`,失败全 graceful;按 `DEEPSEEK_API_KEY` 环境变量自动切换真/假判官 | 105/105 |
+| (未提交) | P0 step 4:`http.py` SSL 修复 | `HttpClient` 改用 `certifi.where()` 作为 CA bundle,绕开 Python 3.12 framework 安装缺默认 cafile 的问题;Reddit/SEC/FRED 等所有 HTTPS 调用受益 | 105/105 |
 
 ### 0.2 P0 当前数据流(已生效)
 
@@ -79,12 +80,30 @@ sharing-resources/
 
 ### 0.5 你现在要做的事(按优先级)
 
-#### 步骤 A:配置 DeepSeek 密钥并实跑一次
-1. 编辑 `sharing-resources/secrets/market_sentiment.secrets.sh`,把 `DEEPSEEK_API_KEY` 填上真实 key(没的话去 platform.deepseek.com 申请)
-2. `source sharing-resources/secrets/market_sentiment.secrets.sh`
-3. 跑一次 preflight:`market-sentiment --config config/watchlist.toml preflight`
-4. 跑一次 daily:`market-sentiment --config config/watchlist.toml run-daily`
-5. 看生成的 `data/reports/<date>/report.md`,确认社交段落的 sentiment 是真的有 bull/bear 区分(不再是清一色 neutral)
+> 历史步骤 A(配置 DeepSeek)已在 secrets 中完成;社交抓帖链路已在 2026-05-12 端到端验证(见 0.7)。下面是下一阶段。
+
+#### 步骤 A':补 X 接入(可选,但用户明确想要)
+1. 注册一个 **X 小号**(强烈别用主号,twikit 自己的 `ToProtectYourAccount.md` 说明有封号风险)
+2. 二选一登录路径:
+   - 账密路径:secrets.sh 里填 `X_USERNAME` / `X_EMAIL` / `X_PASSWORD` / `X_EMAIL_PASSWORD`
+   - cookie 路径(更稳):浏览器登小号 → 导出 `auth_token` + `ct0` → 存成 JSON 到 `X_COOKIES_PATH`(注意当前 secrets.sh 路径还是 `/Users/votee_tommy/...` 老地址,要改成 `/Users/dr/Desktop/市场情绪/data/state/x_cookies.json`)
+3. 装库:`pip install twikit twscrape`
+4. 国内必走代理(`HTTPS_PROXY` 环境变量注入 python 进程)
+5. 写一个最小验证脚本,只走 `XClient.fetch_posts(...)`,把结果存到 `data/diagnostics/x_verify.json`
+6. 失败可能性高;若 cookie/账密都跑不通,跳到步骤 A''
+
+#### 步骤 A'':写 StockTwits provider(X 走不通时的最佳补位)
+- 公开 stream 端点 `https://api.stocktwits.com/api/2/streams/symbol/<TICKER>.json` **无需 token**,直接返回带 bull/bear 标签的股票相关消息
+- 新建 `sharing-resources/src/market_sentiment/sources/stocktwits.py`,实现 `SocialProvider` 接口
+- 注册到 `social_registry.py`,加 `config.SocialConfig.stocktwits` 配置段
+- 已规划过(本文 P2-2),现在可以提前到 P0/P1 优先级
+- 实现成本:1-2 小时
+
+#### 步骤 B:跑一次完整 daily,验证 DeepSeek 判官
+1. `source sharing-resources/secrets/market_sentiment.secrets.sh`
+2. `market-sentiment --config config/watchlist.toml preflight`
+3. `market-sentiment --config config/watchlist.toml run-daily`
+4. 看生成的 `data/reports/<date>/report.md`,确认社交段落的 sentiment 是真的有 bull/bear 区分(不再是清一色 neutral)
 
 #### 步骤 B:观察一周,验证 DeepSeek 判得准不准
 - 抽样 20 条被判 bear 的帖子人工对照,看判得对不对
@@ -126,6 +145,269 @@ P0 还差一块没做:**SEC 财报缓存接入**。schema 已建好(`filing_summ
 - **是否并发执行**:并发 N 个 subagent 同时跑,还是串行?(SKILL.md 里需要明确告诉主 agent 用并行 tool call)
 
 实施时机:**等步骤 A-C 跑通、积累一周数据后再做**——届时能根据真实帖子量级和 DeepSeek 输出质量来定上面这些数字,免得拍脑袋定的参数后期返工。
+
+---
+
+### 0.7 P0 step 4 实测记录(2026-05-12)
+
+#### 0.7.1 已测试什么
+
+由 haiku subagent 跑端到端社交抓帖测试,目标:验证 Reddit / Discourse / X 三条链路在不走缓存的前提下能否真的把帖子拉下来落盘。测试 ticker:NVDA / GOOGL。
+
+| Provider | 结果 | 关键发现 |
+|---|---|---|
+| Reddit | ❌ → ✅(修复后) | 命中**公开** `search.json`,不需要 OAuth,前面以为缺 `REDDIT_CLIENT_ID` 是误判;真实 bug 是 `http.py` SSL 失败 |
+| Discourse | ⊝ | 配置里 `enabled=false`,不在本轮范围 |
+| X (twikit) | ❌ | `twikit` 库未安装 + 缺 X 账号凭证,属于已知问题 |
+
+#### 0.7.2 修了什么
+
+**根因**:`/Library/Frameworks/Python.framework/Versions/3.12/` 安装包默认 `ssl.get_default_verify_paths().cafile` 是 `None`(需手动跑 `Install Certificates.command`),所以 `ssl.create_default_context()` 创建出来的 ctx 没有 CA bundle,所有 HTTPS 调用都炸 `CERTIFICATE_VERIFY_FAILED`。conda 3.10 自带 cert.pem 才碰巧能跑。
+
+**补丁**(`sharing-resources/src/market_sentiment/http.py`,2 行改动,未提交):
+```python
+import certifi   # 新增
+...
+self._ssl_context = ssl.create_default_context(cafile=certifi.where())  # 原为不带参数
+```
+
+**验证**:
+- pytest:105/105 通过
+- Python 3.12 实跑 `RedditClient.fetch_posts("GOOGL", "Alphabet Inc.", today)`:**返回 58 条真实帖**,success=True,partial=False
+- 样本帖落盘到 `/Users/dr/Desktop/市场情绪/data/diagnostics/reddit_verify.json`(~140KB)
+
+#### 0.7.3 顺手发现的"假问题"
+
+诊断 subagent 报告里有几条要打折扣,不要照单全收:
+- "缺 REDDIT_CLIENT_ID/SECRET":❌ 误判。代码用公开 search 端点,不需要 OAuth
+- "secrets.sh 路径全错":部分误判。出错的只有 `X_DB_PATH` / `X_COOKIES_PATH` 两个**操作型路径**(指向数据文件),其它 export 行正常;但这两个路径确实要在配 X 时改回 `/Users/dr/Desktop/...`
+- "DEEPSEEK_API_KEY missing":subagent 自己的 shell 没 source secrets.sh,不代表配置里没有
+
+#### 0.7.4 下一步选项(给用户决策)
+
+**优先级排序(orchestrator 推荐)**:
+
+1. **写 StockTwits provider**(1-2 小时,纯增量)——公开 stream 端点 `api.stocktwits.com/api/2/streams/symbol/<TICKER>.json` 无需 token,返回带 bull/bear 标签的股票消息,可大幅减轻 DeepSeek 工作量
+2. **接入 X(twikit)**——用户明确想要,但需要先去注册 X 小号 + 导 cookie + 配代理;封号风险真实存在
+3. **跑一次完整 `run-daily`**——把 Reddit + DeepSeek 链路实跑一遍,看 report.md 社交段落是不是真的有 bull/bear 区分
+
+> 顺序逻辑:1 让社交源更丰富、3 验证已有链路、2 是补强。可以 1 和 3 并行做,2 等用户拿到 X 小号 cookie 再说。
+
+#### 0.7.5 派工流程留档(下次复用)
+
+- 诊断 subagent:`general-purpose` + `model: haiku`,只读、产 JSON + MD 报告,严禁改代码
+- 由 orchestrator(我)对照源码复核报告 → 区分真假问题 → 圈定**唯一**真 bug
+- 修复 subagent:同样 haiku,但**给出精确 diff 描述**(几行加在哪、改成什么),不让它自己发挥
+- 验证:跑 pytest + 写一个独立 verify 脚本调真接口,产物落盘到 `data/diagnostics/`
+
+教训:haiku subagent 给的根因分析要审,**不能直接复制**。它倾向于把所有"看着不对"的事情都列成根因,实际可能只是它的执行环境问题(比如它用了 Python 3.12 framework 而项目实际是用 conda 3.10 跑)。
+
+---
+
+### 0.8 真实状态盘点 + 下一步路线(2026-05-14)
+
+#### 0.8.1 状态澄清:"代码到位" ≠ "端到端跑通"
+
+之前几次进度叙述把"代码写好了"当成"完成了",这里**重新校对一遍**。截至 2026-05-14:
+
+| 数据 lane | 代码 | 端到端实跑过 | 备注 |
+|---|---|---|---|
+| Reddit 社交 | ✅ | ✅ 2026-05-12 | 58 帖落盘,见 0.7 |
+| Discourse 社交 | ✅ | ⊝ 配置禁用 | 没配 base_urls |
+| X 社交 | ✅ | ❌ 已知失败 | 需 X 小号 + cookie + 代理,**暂时跳过** |
+| SEC 财报数字 (`company_facts`) | ✅ | ❓ **未实测** | 单测 mock 通过,真 API 没拉过 |
+| SEC 官方披露 (`submissions`) | ✅ | ❓ **未实测** | 同上 |
+| Alpha Vantage 日线 | ✅ | ❓ **未实测** | 25 次/天配额风险已知 |
+| Stooq 备用价格 | ✅ | ❓ **未实测** | 无 retry |
+| FRED 宏观(DGS10/DFF) | ✅ | ❓ **未实测** | |
+| EIA 能源 | ✅ | ❓ **未实测** | 默认 optional |
+| Alpha Vantage 期权 | ✅ | ⊝ 默认 disabled | 不在本轮范围 |
+| DeepSeek 情绪判官 | ✅ | ❓ **未实跑** | 密钥已配,但没实际 batch 过 |
+
+**结论**:我们其实只验证了 1/11 条 lane。之前对话里说"已完成获取财报数字 / 社交情绪 / 官方披露"是不准确的——只有社交里的 Reddit 一条算真完成。
+
+#### 0.8.2 暂时跳过的小问题(用户确认 2026-05-14)
+
+- DeepSeek API 二次调试(prompt 校准、判得准不准)→ 跳过,先跑通 pipeline 再说
+- X 社交链路(twikit + 小号 + cookie)→ 跳过
+- StockTwits 新 provider → 跳过
+- 老路径 `/Users/votee_tommy/...` 修正 → 跳过(只影响 X,X 也暂不用)
+
+> 这些都是局部 polish,不阻挡"主链路是否能端到端跑通"这个更大的验证目标。
+
+#### 0.8.3 下一步:整跑 vs 逐 lane
+
+两种思路:
+
+**思路 A:逐 lane 写 verify 脚本(像 Reddit 那样一个一个测)**
+- 优点:精细
+- 缺点:每条 lane 都要写 30 行验证脚本 × 8 条 lane = 工作量翻倍;并且 pipeline 内部还有数据合并、序列化、打分等链路,逐 lane 测不到
+
+**思路 B:直接跑一次 `run-daily`,看 `source_health` 谁挂(推荐)** ⭐
+- 单条命令,~10 分钟拿全景图
+- pipeline 已经把每个 source 的 success / partial / message 字段写进 review_packet
+- 失败的 lane 才需要后续单独深挖,全成功的 lane 不需要再单测
+- 顺带验证打分、报告生成、邮件投递等下游链路
+
+**判断**:打分决策链(`scoring.py`)是 data 的纯函数,105/105 单测已经覆盖;它不会因外部依赖挂掉,只会因为输入空数据给保底分。所以**风险点全在数据 lane**,不在打分。
+
+#### 0.8.4 执行步骤(下次会话开始就跑)
+
+```bash
+# 1. 加载密钥
+source sharing-resources/secrets/market_sentiment.secrets.sh
+
+# 2. 预飞,验证配置层
+market-sentiment --config config/watchlist.toml preflight
+
+# 3. 跑一次完整 daily
+market-sentiment --config config/watchlist.toml run-daily
+
+# 4. 看产出
+cat data/reports/<date>/report.md           # 总报告
+cat data/review_packets/<ticker>.json | jq .source_health  # 每个源的状态
+```
+
+**判读规则**:
+- `source_health[*].success == true` 的 lane → 不用管
+- `success == false` 或 `partial == true` 的 lane → 看 `message` 字段,排队修
+- 全部 lane 都 success 但 `scorecard` 看着不合理 → 才去看打分逻辑
+
+#### 0.8.5 预期会发现的问题(打提前量)
+
+按本文第五章和经验,实跑大概率会暴露:
+
+1. **SEC EDGAR User-Agent**:`secrets.sh` 里写的 `SEC_USER_AGENT="NT nt1786146194@gmail.com"` 格式不是 SEC 推荐的"AppName/version (contact@email)",可能 403
+2. **Alpha Vantage 配额**:免费 key 25 次/天,watchlist 多于 25 票直接挂
+3. **FRED 系列 ID 不更新**:DGS10 / DFF 长时间没新数据时返回空,代码可能没处理
+4. **report.md 模板兼容性**:新增的 `is_stub` 字段、缓存复用帖,模板能不能正确显示
+5. **DeepSeek 第一次真调用**:可能命中 API 限流、超时、批量大小问题
+
+这些不要预先修——**等实跑暴露了再处理**,避免拍脑袋改代码。
+
+---
+
+### 0.9 P0 step 5-7 收尾(2026-05-14 当日完成)
+
+#### 0.9.1 实跑 + DeepSeek 真验证
+
+**派工**:Sonnet test subagent(本轮按用户要求换 Sonnet)+ Sonnet fix(未触发,无 bug)
+
+**全链路实测结果**(2026-05-14 run-daily,ticker = MSFT + CRM):
+
+| lane | 状态 | 证据 |
+|---|---|---|
+| Reddit | ✅ | MSFT 109 帖 / CRM 14 帖 |
+| SEC submissions | ✅ | source_health 全部 ok |
+| SEC company_facts | ✅ | MSFT 取到 2026 Q1 fundamentals |
+| Alpha Vantage 日线 | ✅ | 到 2026-05-13 |
+| FRED 宏观 | ✅ | DGS10 + DFF |
+| EIA 能源 | ✅ | 天然气数据 |
+| **DeepSeek 真判官** | ✅ **本轮真验通** | HTTP 200 + server UUID + usage 1090 tokens + 235ms latency |
+| X (twikit) | ❌ | 预期失败,无 cookie/账号 |
+| Discourse | ⊝ | 配置禁用 |
+| 期权 | ⊝ | 默认禁用 |
+
+#### 0.9.2 DeepSeek 切到 v4-flash
+
+**为什么换**:用户反馈 dashboard 看不到额度变化,且 `deepseek-chat` 官方公告 2026-07-24 退役。
+
+**真调用证据**(无法本地伪造):
+- 服务端 `id`: `1f04e863-d410-4c22-b0b1-33ee0e486866`(DeepSeek 后端生成 UUID)
+- 服务端回显 `model`: `deepseek-v4-flash`
+- `usage.total_tokens`: 1090(计费字段)
+- 网络延迟: 235ms
+
+**之前用户看不到额度变化的真实原因**:DeepSeek dashboard 有数分钟到数十分钟延迟,且早期测试 token 量小,余额变化不显眼。
+
+**代码改动**(`subagent_sentiment.py`,2 处):
+1. `__init__` 默认 model:`"deepseek-chat"` → `"deepseek-v4-flash"`
+2. `_call_deepseek_api` 请求体新增 `"thinking": {"type": "disabled"}` —— v4-flash 默认开思考模式,不关的话 token 都被 reasoning 吃掉、`content` 返回空字符串、JSON 解析直接挂
+
+**测试**:105/105 通过,5/5 真情绪判决(bull/bear/neutral 都识别正确),证据落 `data/diagnostics/deepseek_v4_flash_verify.json`
+
+#### 0.9.3 打分输出验证(MSFT 实例)
+
+```
+bucket_scores:
+  fundamentals      : 30/30  ← 营收+17.8%、正经营现金流、现金覆盖债务
+  sentiment         : 12/15  ← 披露窗口新鲜
+  chain_confirmation: 20/20  ← 公司特有跌幅
+  price_flow        :  4/15  ← 仍在 10日/20日 回撤区间
+  risk_red_flags    : 17/20  ← 仍处新低 -3
+  social_rebound    :  0/10  ← ⚠️ 见 0.9.5
+基础总分: 83/100,无 veto
+```
+
+→ **打分链路本身正常**,五大维度数据齐全且分值合理。
+
+#### 0.9.4 数据缓存盘点(回应用户提问)
+
+| 缓存表 | schema | 写入 | 读取(命中跳过 LLM/API) | 状态 |
+|---|---|---|---|---|
+| `social_post_cache`(14天滚动) | ✅ | ✅ social_service 写 | ✅ social_service 读 | **完整闭环** |
+| `filing_summary_cache`(SEC 财报) | ✅ | ⚠️ CRUD 存在 | ❌ **未接入 sources/sec.py** | **schema 有,链路没通** |
+| Alpha Vantage 日线 | ❌ | ❌ | ❌(仅 yfinance 脚本另存) | **无任何缓存** |
+| FRED / EIA | ❌ | ❌ | ❌ | **无任何缓存** |
+
+**结论**:用户问的"财报会一直保存下来"——**还没**。表已经建好,storage.py 里有 `upsert_filing_summary_cache` 和 `get_filing_summaries_for_ticker`,但 `sources/sec.py` 没调它们,所以每次 run-daily 都会重拉 SEC EDGAR。这是 P0 的最后一块没做完的活(本文 0.5 步骤 D)。
+
+**其他要做类似缓存的**:
+1. **SEC filing**(优先级最高)——schema 已建,只需把 `sources/sec.py` 改成"先查 `filing_summary_cache`,命中跳过 HTTP"。10-Q/10-K 一旦发布就不变,可缓存 90 天;8-K 列表每次重拉,但单条 8-K 内容也是 immutable
+2. **Alpha Vantage 日线**(优先级高)——25 次/天配额是项目最大风险点。考虑用 SQLite 表 `price_cache(ticker, run_date, bars_json)`,同一 ticker 同天复用
+3. **FRED / EIA**(优先级低)——quota 宽松,但数据本身是按日 immutable 的,做缓存可以减少网络调用,不急
+
+#### 0.9.5 仍待修的小问题
+
+**social_rebound = 0 的原因**:本日第一次 run-daily 是在 DeepSeek SSL 还没修之前(0.7),那次的社交分都成了 stub,`is_stub=True` 不写缓存(0.3),所以 social_summary 拿到 `social_recent_sample_insufficient`。修完 DeepSeek 后**还没重跑一次 run-daily**——本轮 commit 之后会再跑一次,届时 social_rebound 应该非 0。
+
+---
+
+### 0.10 下一阶段路线(P0 收尾 + P1 启动)
+
+整个 P0 框架现在差**一块**没收尾(filing 缓存接入)。收完 P0 后转 P1。
+
+#### 0.10.1 P0 step 8 —— SEC filing 缓存接入(下一个动作)
+
+**任务**:把 `sources/sec.py` 改成查 `filing_summary_cache` 命中即跳过 HTTP
+
+- 抓 filing 前先 `storage.get_filing_summaries_for_ticker(ticker)` 看本地有没有
+- 已有 `accession_number` 跳过详情拉取,直接复用 summary
+- 10-Q/10-K:长期缓存(默认无过期,form 一旦归档就 immutable)
+- 8-K:列表每次重拉(可能有新事件),但单条 8-K 详情按 accession_number 走缓存
+
+**预计工作量**:2-3 小时(已有 CRUD,主要是改 `sources/sec.py` 的拉取流程 + 单测)
+
+**验收**:同一 ticker 同一天第二次 run-daily,SEC EDGAR 不发出任何 HTTP 请求
+
+#### 0.10.2 P0 步骤 D'(可选):Alpha Vantage 价格缓存
+
+- 新建 `price_cache(ticker, run_date, payload_json)` 表
+- `sources/alpha_vantage.py` 写前先查
+- 解决 25 次/天配额问题
+
+**预计工作量**:2 小时,可与 0.10.1 并行
+
+#### 0.10.3 P0 全部收尾后,P1 启动(以下都在本文第六章已列,这里只排顺序)
+
+| Pn | 任务 | 涉及文件 | 备注 |
+|---|---|---|---|
+| **P1-1** | 社交配置缺失时主动报警 | `runtime_preflight.py` + `reporting.py` | 现在 Reddit 任一 subreddit 挂了不会告警,导致 social_rebound 静默 0(本日 MSFT 就遇到了) |
+| **P1-2** | Alpha Vantage 配额耗尽 fail-fast | `sources/alpha_vantage.py` | 现在静默 fall through 到 Stooq |
+| **P1-3** | 调整数据缺失保底分 | `scoring.py:155,162` | 让缺数据真的扣分,不要 8/30 偏高 |
+| **P0-1** | 社交帖 body 字数截断 | `social_service.py` | 已有 stub 限制数量,但单帖 body 没截断 |
+| **P0-2** | review_packet event.body 截断 | `review_packets.py` | 同上,8-K body 可能数千词 |
+| **P0-3** | 最低数据完整度门控 | `pipeline.py` + `scoring.py` | 全源失败时强制 WATCH |
+
+> P0-1/-2/-3 名义上仍属 P0(本文第六章),但因为本轮已经把"主链路打通 + DeepSeek 真验通"作为更紧急的目标插队,所以编号上排到 P1 之后了。等 0.10.1 + 0.10.2 收尾后看是否优先做这三个。
+
+#### 0.10.4 等用户决策的事(从第七章里挑现在最紧的)
+
+- **#1** 单帖 body 截断字数(500-800 之间挑一个)
+- **#4** 数据缺失保底分给多少
+- **#8** `official_events` 列表从 8 降到 5 还是别的
+
+剩下的(#2/#3/#5/#7/#9/#10)等 0.10.1 + 0.10.2 跑通再回来定。
 
 ---
 
