@@ -189,7 +189,13 @@ class RuntimeFixTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pipeline, old_env = make_pipeline(tmp)
             original_alpha_key = os.environ.pop("ALPHAVANTAGE_API_KEY", None)
+            saved_keys = {}
             try:
+                # Set required keys but remove ALPHAVANTAGE for testing
+                for key in ["FRED_API_KEY", "SEC_USER_AGENT", "DEEPSEEK_API_KEY"]:
+                    saved_keys[key] = os.environ.pop(key, None)
+                    os.environ[key] = "test_key_min_length_6"
+
                 pipeline.config.social.enabled = True
                 pipeline.config.social.x.enabled = True
                 pipeline.config.social.x.provider = "twscrape,twikit"
@@ -211,12 +217,23 @@ class RuntimeFixTests(TestCase):
             finally:
                 if original_alpha_key is not None:
                     os.environ["ALPHAVANTAGE_API_KEY"] = original_alpha_key
+                for key, value in saved_keys.items():
+                    if value is not None:
+                        os.environ[key] = value
+                    else:
+                        os.environ.pop(key, None)
                 restore_env(old_env)
 
     def test_preflight_accepts_twscrape_bootstrap_file_as_ready_x_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             pipeline, old_env = make_pipeline(tmp)
+            saved_keys = {}
             try:
+                # Save and set required API keys for preflight to pass
+                for key in ["ALPHAVANTAGE_API_KEY", "FRED_API_KEY", "SEC_USER_AGENT", "DEEPSEEK_API_KEY"]:
+                    saved_keys[key] = os.environ.pop(key, None)
+                    os.environ[key] = "test_key_min_length_6"
+
                 accounts_file = Path(tmp) / "x_accounts.txt"
                 accounts_file.write_text(
                     "user:pass:mail@example.com:mailpass:_:cookies.json\n",
@@ -237,5 +254,53 @@ class RuntimeFixTests(TestCase):
 
                 self.assertTrue(summary.ready)
                 self.assertIn("accounts bootstrap", rendered)
+            finally:
+                for key, value in saved_keys.items():
+                    if value is not None:
+                        os.environ[key] = value
+                    else:
+                        os.environ.pop(key, None)
+                restore_env(old_env)
+
+    def test_preflight_api_key_check_warns_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline, old_env = make_pipeline(tmp)
+            original_key = os.environ.pop("ALPHAVANTAGE_API_KEY", None)
+            try:
+                pipeline.config.social.enabled = False
+                pipeline.config.options.enabled = False
+
+                summary = pipeline.preflight()
+                rendered = "\n".join(summary.to_lines()).lower()
+
+                check_names = {check.name for check in summary.checks}
+                self.assertIn("API key: ALPHAVANTAGE_API_KEY", check_names)
+                self.assertIn("API key: FRED_API_KEY", check_names)
+                self.assertIn("missing — set in secrets file", rendered)
+                self.assertFalse(summary.ready)
+            finally:
+                if original_key is not None:
+                    os.environ["ALPHAVANTAGE_API_KEY"] = original_key
+                restore_env(old_env)
+
+    def test_preflight_social_warn_when_all_providers_off(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline, old_env = make_pipeline(tmp)
+            try:
+                pipeline.config.social.enabled = True
+                pipeline.config.social.reddit.enabled = False
+                pipeline.config.social.x.enabled = False
+                pipeline.config.social.forum.enabled = False
+                pipeline.config.options.enabled = False
+
+                summary = pipeline.preflight()
+                rendered = "\n".join(summary.to_lines()).lower()
+
+                social_checks = [c for c in summary.checks if c.name == "Social providers"]
+                self.assertTrue(len(social_checks) > 0)
+                social_check = social_checks[0]
+                self.assertFalse(social_check.ok)
+                self.assertFalse(social_check.blocking)
+                self.assertIn("unusable", social_check.message)
             finally:
                 restore_env(old_env)

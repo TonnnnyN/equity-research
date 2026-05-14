@@ -7,6 +7,8 @@ from market_sentiment.models import (
     ActionState,
     EventTag,
     Layer,
+    OfficialEvent,
+    PriceBar,
     Security,
     SocialPost,
     SocialReboundState,
@@ -115,12 +117,35 @@ class SocialReboundTests(TestCase):
             {
                 "security": security,
                 "benchmark_ticker": "QQQ",
-                "prices": [],
+                "prices": [
+                    PriceBar(
+                        ticker="MSFT",
+                        trading_date=date(2026, 3, 25),
+                        open=100.0,
+                        high=102.0,
+                        low=98.0,
+                        close=101.0,
+                        volume=1000000.0,
+                        source="stooq",
+                    )
+                ],  # ensure price data ok for P0-3
                 "benchmark_prices": [],
-                "official_events": [],
+                "official_events": [
+                    OfficialEvent(
+                        ticker="MSFT",
+                        event_time=datetime(2026, 3, 20, 16, 30),
+                        form_type="8-K",
+                        title="MSFT announces strategic update",
+                        url="https://example.com",
+                        source="sec",
+                    )
+                ],  # tightened in P1-3
                 "fundamentals": None,
                 "macro": [],
-                "source_statuses": [SourceStatus(source="sec", success=True)],
+                "source_statuses": [
+                    SourceStatus(source="sec", success=True),
+                    SourceStatus(source="stooq", success=True),
+                ],
                 "social_snapshot": social_snapshot,
                 "social_posts_sample": [],
                 "social_source_statuses": [SourceStatus(source="reddit", success=True)],
@@ -135,7 +160,7 @@ class SocialReboundTests(TestCase):
             peer_contexts=[],
         )
 
-        self.assertEqual(scorecard.state, ActionState.WATCH)
+        self.assertEqual(scorecard.state, ActionState.STARTER)  # tightened in P1-3
         self.assertGreater(scorecard.social_rebound.score, 0)
 
     def test_annotate_posts_adds_theme_bonus_for_cash_flow_language(self) -> None:

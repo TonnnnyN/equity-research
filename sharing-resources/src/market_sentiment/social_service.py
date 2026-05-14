@@ -21,6 +21,8 @@ from market_sentiment.subagent_sentiment import (
 
 logger = logging.getLogger(__name__)
 
+_BODY_CHAR_CAP = 600
+
 
 class SocialSignalService:
     def __init__(
@@ -229,7 +231,16 @@ def _cap_posts(posts, limit: int):
     if limit <= 0:
         return []
     ordered = sorted(posts, key=lambda item: (item.created_at, item.engagement_score), reverse=True)
-    return ordered[:limit]
+    capped = ordered[:limit]
+
+    # Truncate body to _BODY_CHAR_CAP characters
+    result = []
+    for post in capped:
+        if len(post.body) > _BODY_CHAR_CAP:
+            from dataclasses import replace
+            post = replace(post, body=post.body[:_BODY_CHAR_CAP] + "...[truncated]")
+        result.append(post)
+    return result
 
 
 @dataclass(slots=True)

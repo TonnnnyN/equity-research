@@ -34,6 +34,7 @@ def build_review_packet(
             "packet_id": f"{scorecard.run_date.isoformat()}::{scorecard.security.ticker}",
             "generated_at": generated_at,
             "run_date": scorecard.run_date,
+            "data_quality": "insufficient" if scorecard.data_insufficient else "ok",
             "security": asdict(scorecard.security),
             "benchmark_ticker": context.benchmark_ticker,
             "rule_engine_precheck": {
@@ -70,7 +71,7 @@ def build_review_packet(
                 "recent_security_bars": [_serialize_price(bar) for bar in prices[-21:]],
                 "recent_benchmark_bars": [_serialize_price(bar) for bar in benchmark_prices[-21:]],
             },
-            "official_events": [_serialize_event(event) for event in context.official_events[:8]],
+            "official_events": [_serialize_event(event) for event in context.official_events[:5]],
             "fundamentals_snapshot": _serialize_fundamentals(context.fundamentals),
             "option_summary": _serialize_option_snapshot(getattr(context, "options_snapshot", None)),
             "social_summary": _serialize_social_summary(context),

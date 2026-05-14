@@ -32,9 +32,127 @@ class PreflightSummary:
         return lines
 
 
+def _build_api_key_checks(config: ProjectConfig) -> list[PreflightCheck]:
+    checks: list[PreflightCheck] = []
+    api_keys = [
+        ("ALPHAVANTAGE_API_KEY", True),
+        ("FRED_API_KEY", True),
+        ("EIA_API_KEY", False),
+        ("SEC_USER_AGENT", True),
+        ("DEEPSEEK_API_KEY", True),
+    ]
+
+    for key_name, blocking in api_keys:
+        key_value = os.environ.get(key_name)
+        if key_value and len(key_value) > 5:
+            checks.append(
+                PreflightCheck(
+                    f"API key: {key_name}",
+                    True,
+                    f"configured (length {len(key_value)})",
+                    blocking=blocking,
+                )
+            )
+        elif key_value:
+            checks.append(
+                PreflightCheck(
+                    f"API key: {key_name}",
+                    False,
+                    "set but empty",
+                    blocking=blocking,
+                )
+            )
+        else:
+            checks.append(
+                PreflightCheck(
+                    f"API key: {key_name}",
+                    False,
+                    "missing — set in secrets file",
+                    blocking=blocking,
+                )
+            )
+
+    if config.social.reddit.enabled:
+        for reddit_key in ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"]:
+            key_value = os.environ.get(reddit_key)
+            if key_value and len(key_value) > 5:
+                checks.append(
+                    PreflightCheck(
+                        f"API key: {reddit_key}",
+                        True,
+                        f"configured (length {len(key_value)})",
+                        blocking=False,
+                    )
+                )
+            elif key_value:
+                checks.append(
+                    PreflightCheck(
+                        f"API key: {reddit_key}",
+                        False,
+                        "set but empty",
+                        blocking=False,
+                    )
+                )
+            else:
+                checks.append(
+                    PreflightCheck(
+                        f"API key: {reddit_key}",
+                        False,
+                        "missing — set in secrets file",
+                        blocking=False,
+                    )
+                )
+
+    return checks
+
+
+def _build_social_provider_check(config: ProjectConfig) -> list[PreflightCheck]:
+    if not config.social.enabled:
+        return []
+
+    reddit_usable = config.social.reddit.enabled
+    x_usable = config.social.x.enabled
+    forum_usable = config.social.forum.enabled and bool(config.social.forum.base_urls)
+
+    if not reddit_usable and not x_usable and not forum_usable:
+        return [
+            PreflightCheck(
+                "Social providers",
+                False,
+                "social.enabled=True but reddit/forum/x all unusable — social_rebound will silently be 0",
+                blocking=False,
+            )
+        ]
+
+    provider_list = []
+    if reddit_usable:
+        provider_list.append("reddit on")
+    else:
+        provider_list.append("reddit off")
+    if x_usable:
+        provider_list.append("x on")
+    else:
+        provider_list.append("x off")
+    if forum_usable:
+        provider_list.append("forum on")
+    else:
+        provider_list.append("forum off")
+
+    return [
+        PreflightCheck(
+            "Social providers",
+            True,
+            f"at least one provider configured ({', '.join(provider_list)})",
+            blocking=False,
+        )
+    ]
+
+
 def build_preflight_summary(config: ProjectConfig) -> PreflightSummary:
     checks: list[PreflightCheck] = []
+    checks.extend(_build_api_key_checks(config))
     checks.extend(_build_x_checks(config))
+    checks.extend(_build_social_provider_check(config))
     checks.extend(_build_options_checks(config))
     return PreflightSummary(checks=checks)
 

@@ -16,7 +16,7 @@ from market_sentiment.models import (
     TriggerResult,
 )
 from market_sentiment.pipeline import dedupe_statuses
-from market_sentiment.scoring import build_scorecard
+from market_sentiment.scoring import build_scorecard, cap_state_if_data_insufficient
 
 
 class ScoringTests(TestCase):
@@ -166,3 +166,30 @@ class ScoringTests(TestCase):
 
         self.assertGreaterEqual(scorecard.chain_confirmation.score, 19)
         self.assertIn("options_call_skew_constructive", scorecard.chain_confirmation.notes)
+
+    def test_cap_state_caps_add_to_watch_when_sec_and_price_missing(self) -> None:
+        source_health = [
+            SourceStatus(source="sec", success=False, partial=False),
+            SourceStatus(source="alpha_vantage", success=False, partial=False),
+        ]
+        result_state, insufficient = cap_state_if_data_insufficient(ActionState.ADD, source_health)
+        self.assertEqual(result_state, ActionState.WATCH)
+        self.assertTrue(insufficient)
+
+    def test_cap_state_preserves_state_when_data_ok(self) -> None:
+        source_health = [
+            SourceStatus(source="sec", success=True, partial=False),
+            SourceStatus(source="alpha_vantage", success=True, partial=False),
+        ]
+        result_state, insufficient = cap_state_if_data_insufficient(ActionState.ADD, source_health)
+        self.assertEqual(result_state, ActionState.ADD)
+        self.assertFalse(insufficient)
+
+    def test_cap_state_treats_cached_prices_as_insufficient(self) -> None:
+        source_health = [
+            SourceStatus(source="sec", success=True, partial=False),
+            SourceStatus(source="daily_prices_cache", success=True, partial=True),
+        ]
+        result_state, insufficient = cap_state_if_data_insufficient(ActionState.ADD, source_health)
+        self.assertEqual(result_state, ActionState.WATCH)
+        self.assertTrue(insufficient)

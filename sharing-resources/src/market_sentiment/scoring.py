@@ -12,6 +12,7 @@ from market_sentiment.models import (
     PipelineContext,
     ScoreCard,
     SocialSnapshot,
+    SourceStatus,
 )
 
 
@@ -70,6 +71,7 @@ def build_scorecard(
     base_state = map_state(base_total, veto_reason=veto_reason, trigger_reasons=trigger.reasons, new_low=trigger.new_low)
     candidate_state = map_state(total, veto_reason=veto_reason, trigger_reasons=trigger.reasons, new_low=trigger.new_low)
     state = apply_social_guardrail(base_state, candidate_state, social_rebound.score)
+    state, data_insufficient = cap_state_if_data_insufficient(state, context.source_statuses)
 
     evidence = [event.form_type for event in context.official_events[:3]]
     if trigger.reasons:
@@ -94,6 +96,7 @@ def build_scorecard(
         state=state if not veto_reason else ActionState.REJECT,
         veto_reason=veto_reason,
         partial_coverage=partial_coverage,
+        data_insufficient=data_insufficient,
         evidence=evidence,
     )
 
@@ -152,14 +155,14 @@ def score_fundamentals(run_date: date, events: list[OfficialEvent], snapshot: Fu
             score += 2
             notes.append("recent_current_report")
     elif snapshot is None:
-        return BucketScore("fundamentals", 8, 30, ["no_official_events_or_companyfacts"])
+        return BucketScore("fundamentals", 4, 30, ["no_official_events_or_companyfacts"])
 
     return BucketScore("fundamentals", min(score, 30), 30, notes)
 
 
 def score_sentiment(run_date: date, events: list[OfficialEvent]) -> BucketScore:
     if not events:
-        return BucketScore("sentiment", 5, 15, ["missing_event_text"])
+        return BucketScore("sentiment", 3, 15, ["missing_event_text"])
     score = 6
     notes = []
     titles = " ".join(event.title.lower() for event in events[:10])
@@ -321,6 +324,27 @@ def apply_social_guardrail(base_state: ActionState, candidate_state: ActionState
     if base_state == ActionState.REJECT and candidate_state not in {ActionState.REJECT, ActionState.WATCH}:
         return ActionState.WATCH
     return candidate_state
+
+
+def cap_state_if_data_insufficient(state: ActionState, source_health: list[SourceStatus]) -> tuple[ActionState, bool]:
+    """If both SEC submissions and price data are missing/empty, cap state at WATCH.
+    Returns (possibly-downgraded state, insufficient_flag).
+    """
+    sec_ok = any(
+        s.source == "sec" and s.success and not s.partial
+        for s in source_health
+    )
+    price_ok = any(
+        s.source in ("alpha_vantage", "stooq") and s.success and not s.partial
+        for s in source_health
+    )
+    if sec_ok and price_ok:
+        return state, False
+    # core data insufficient — cap upside only if both are bad
+    insufficient = not (sec_ok and price_ok)
+    if insufficient and state in (ActionState.ADD, ActionState.STARTER):
+        return ActionState.WATCH, True
+    return state, insufficient
 
 
 def _score_options_confirmation(snapshot: OptionSnapshot | None) -> tuple[int, list[str]]:

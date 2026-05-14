@@ -297,6 +297,7 @@ class ScoreCard:
     state: ActionState
     veto_reason: str | None = None
     partial_coverage: bool = False
+    data_insufficient: bool = False
     evidence: list[str] = field(default_factory=list)
     social_rebound: BucketScore = field(default_factory=lambda: BucketScore("social_rebound", 0, 10, []))
 
