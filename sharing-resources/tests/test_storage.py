@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.models import ActionState, BucketScore, DailyRunReport, EventTag, Layer, ScoreCard, Security, SourceStatus, TriggerResult
+from market_sentiment.models import ActionState, BucketScore, DailyRunReport, EventTag, Layer, PriceBar, ScoreCard, Security, SourceStatus, TriggerResult
 from market_sentiment.storage import Storage
 
 
@@ -201,3 +201,59 @@ class StorageTests(TestCase):
             self.assertEqual(summary.deleted_db_rows["daily_prices"], 1)
             with sqlite3.connect(storage.db_path) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM runs WHERE run_date = ?", (reference_day.isoformat(),)).fetchone()[0], 1)
+
+    def test_read_cached_prices_returns_recent_bars_sorted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            # Upsert 3 PriceBars for ticker "TESTX" with trading_dates spanning 5 days (recent)
+            base_date = date.today() - timedelta(days=5)  # 5 days ago
+            bars = [
+                PriceBar(
+                    ticker="TESTX",
+                    trading_date=base_date,
+                    open=100.0,
+                    high=101.0,
+                    low=99.0,
+                    close=100.5,
+                    volume=1000,
+                    source="test",
+                ),
+                PriceBar(
+                    ticker="TESTX",
+                    trading_date=base_date + timedelta(days=1),
+                    open=100.5,
+                    high=102.0,
+                    low=100.0,
+                    close=101.5,
+                    volume=1100,
+                    source="test",
+                ),
+                PriceBar(
+                    ticker="TESTX",
+                    trading_date=base_date + timedelta(days=5),
+                    open=101.5,
+                    high=103.0,
+                    low=101.0,
+                    close=102.5,
+                    volume=1200,
+                    source="test",
+                ),
+            ]
+            storage.upsert_prices(bars)
+
+            # Call read_cached_prices
+            result = storage.read_cached_prices("TESTX", days_back=30)
+
+            # Assert: returned list length 3, sorted by trading_date ASC, each is a PriceBar instance with correct close
+            self.assertEqual(len(result), 3)
+            self.assertEqual(result[0].trading_date, base_date)
+            self.assertEqual(result[1].trading_date, base_date + timedelta(days=1))
+            self.assertEqual(result[2].trading_date, base_date + timedelta(days=5))
+            self.assertEqual(result[0].close, 100.5)
+            self.assertEqual(result[1].close, 101.5)
+            self.assertEqual(result[2].close, 102.5)
+            for bar in result:
+                self.assertIsInstance(bar, PriceBar)

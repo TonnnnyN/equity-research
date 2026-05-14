@@ -466,3 +466,62 @@ class PipelineTests(TestCase):
 
             self.assertIn("option_summary", packet)
             self.assertEqual(packet["option_summary"]["contract_count"], 2)
+
+    def test_fetch_prices_falls_back_to_sqlite_cache_when_av_and_stooq_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp
+            os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp) / "market_sentiment.db")
+            pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
+            storage = pipeline.storage
+            storage.init_db()
+
+            # Pre-seed Storage's daily_prices table with 25 bars for "AAPL" (recent dates)
+            bars = []
+            start_date = date.today() - timedelta(days=30)  # Start 30 days ago (within 60-day window)
+            for i in range(25):
+                bars.append(
+                    PriceBar(
+                        ticker="AAPL",
+                        trading_date=start_date + timedelta(days=i),
+                        open=100.0 - i * 0.5,
+                        high=101.0 - i * 0.5,
+                        low=99.0 - i * 0.5,
+                        close=100.5 - i * 0.5,
+                        volume=1000 + i * 10,
+                        source="test_seed",
+                    )
+                )
+            storage.upsert_prices(bars)
+
+            # Mock Alpha Vantage to return empty payload (success=False)
+            def av_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+                return SourcePayload(
+                    data=[],
+                    status=SourceStatus(source="alpha_vantage", success=False, partial=True, message="rate limited"),
+                )
+
+            # Mock Stooq to return empty payload (success=False)
+            def stooq_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+                return SourcePayload(
+                    data=[],
+                    status=SourceStatus(source="stooq", success=False, partial=True, message="no data"),
+                )
+
+            pipeline.alpha_vantage.fetch_daily_prices = av_failure  # type: ignore[method-assign]
+            pipeline.stooq.fetch_daily_prices = stooq_failure  # type: ignore[method-assign]
+
+            # Call _fetch_prices_with_fallback (use today as the run date)
+            run_date = date.today()
+            payload, statuses = pipeline._fetch_prices_with_fallback("AAPL", run_date)
+
+            # Assert: returned payload has 25 bars, status.source == "daily_prices_cache", status.partial is True
+            self.assertEqual(len(payload.data), 25)
+            self.assertEqual(payload.status.source, "daily_prices_cache")
+            self.assertTrue(payload.status.partial)
+            self.assertIn("using cached prices through", payload.status.message)
+
+            # Assert: statuses list contains all three sources (AV, Stooq, cache)
+            self.assertEqual(len(statuses), 3)
+            self.assertEqual(statuses[-1].source, "daily_prices_cache")
+            self.assertTrue(statuses[-1].partial)
+            self.assertIn("using cached prices through", statuses[-1].message)

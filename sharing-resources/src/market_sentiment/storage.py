@@ -4,7 +4,7 @@ import json
 import sqlite3
 from contextlib import closing
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 
@@ -242,6 +242,21 @@ class Storage:
                 ],
             )
             conn.commit()
+
+    def read_cached_prices(self, ticker: str, *, days_back: int = 60) -> list[PriceBar]:
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days_back)).isoformat()
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker, trading_date, open, high, low, close, volume,
+                       source, source_url, ingested_at
+                FROM daily_prices
+                WHERE ticker = ? AND trading_date >= ?
+                ORDER BY trading_date ASC
+                """,
+                (ticker, cutoff),
+            ).fetchall()
+        return [_row_to_price_bar(row) for row in rows]
 
     def upsert_events(self, events: list[OfficialEvent]) -> None:
         if not events:
@@ -870,6 +885,21 @@ def _cleanup_raw_directories(
             deleted.append(str(date_dir))
 
     return sorted(deleted)
+
+
+def _row_to_price_bar(row: tuple) -> PriceBar:
+    return PriceBar(
+        ticker=row[0],
+        trading_date=date.fromisoformat(row[1]),
+        open=row[2],
+        high=row[3],
+        low=row[4],
+        close=row[5],
+        volume=row[6],
+        source=row[7],
+        source_url=row[8],
+        ingested_at=datetime.fromisoformat(row[9]) if row[9] else None,
+    )
 
 
 def _row_to_social_post_cache(row: tuple) -> SocialPostCacheRow:

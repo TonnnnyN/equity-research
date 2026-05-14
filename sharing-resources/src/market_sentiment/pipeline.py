@@ -212,6 +212,22 @@ class DailyPipeline:
         statuses.append(fallback.status)
         if fallback.status.success and fallback.data:
             return fallback, statuses
+
+        # When both primary (AV) and fallback (Stooq) have no data:
+        cached = self.storage.read_cached_prices(ticker, days_back=60)
+        if cached:
+            latest = max(bar.trading_date for bar in cached)
+            cache_status = SourceStatus(
+                source="daily_prices_cache",
+                success=True,
+                partial=True,
+                message=f"using cached prices through {latest.isoformat()}; AV+Stooq both unavailable",
+                source_url=None,
+                ingested_at=datetime.now(timezone.utc),
+            )
+            statuses.append(cache_status)
+            return SourcePayload(data=cached, status=cache_status), statuses
+
         return primary, statuses
 
     def _fetch_events_with_recovery(self, ticker: str, run_date: date) -> SourcePayload[list[OfficialEvent]]:
