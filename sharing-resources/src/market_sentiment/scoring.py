@@ -211,6 +211,9 @@ def score_social_rebound(
     if partial_coverage and score > 0:
         score = 0
         notes.append("social_positive_blocked_by_partial_core_coverage")
+    elif partial_coverage and score < 0:
+        score = -(abs(score) // 2)  # halve the penalty, round toward zero
+        notes.append("social_negative_halved_under_partial_coverage")
     return BucketScore("social_rebound", max(-6, min(score, 10)), 10, notes)
 
 

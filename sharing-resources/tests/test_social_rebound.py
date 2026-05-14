@@ -15,7 +15,7 @@ from market_sentiment.models import (
     SourceStatus,
     TriggerResult,
 )
-from market_sentiment.scoring import build_scorecard
+from market_sentiment.scoring import build_scorecard, score_social_rebound
 from market_sentiment.social_rebound import annotate_posts, build_social_snapshot
 
 
@@ -231,3 +231,34 @@ class SocialReboundTests(TestCase):
         )
 
         self.assertEqual(snapshot.recent_posts, 1)
+
+    def test_partial_coverage_halves_negative_social_score(self) -> None:
+        snapshot = build_social_snapshot(
+            ticker="MSFT",
+            run_date=date(2026, 3, 26),
+            posts=[
+                make_post(hours_ago=8, author="bear-1", title="MSFT demand weakening significantly"),
+                make_post(hours_ago=12, author="bear-2", title="MSFT cloud adoption slowing"),
+                make_post(hours_ago=16, author="bear-3", title="MSFT margins compressing badly"),
+                make_post(hours_ago=20, author="bear-4", title="MSFT guidance cuts likely"),
+            ],
+            min_informative_posts=4,
+            min_unique_authors=4,
+            min_sources=1,
+            max_author_share=0.40,
+            recent_window_hours=72,
+            baseline_days=14,
+            provider_names={"reddit"},
+        )
+
+        # Ensure snapshot has negative score
+        self.assertLess(snapshot.score, 0)
+        original_score = snapshot.score
+
+        # Score with partial_coverage=True
+        result = score_social_rebound(snapshot, [], partial_coverage=True)
+
+        # Expected: score should be halved (rounded toward zero)
+        expected_score = -(abs(original_score) // 2)
+        self.assertEqual(result.score, expected_score)
+        self.assertIn("social_negative_halved_under_partial_coverage", result.notes)
