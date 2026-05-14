@@ -1,8 +1,8 @@
 # 市场情绪感知项目 —— 深度评审报告
 
 > 初版生成日期：2026-05-12
-> 最新更新：2026-05-14（0.15 新增：缓存价格 fallback 落地 + CRM 单票 E2E 真打通）
-> 当前代码版本：`dbdc6fe`
+> 最新更新：2026-05-15（0.16 新增：Tier 1+2+3 P0/P1/P2/P3 集中收尾，118/118 测试）
+> 当前代码版本：`c387fa3`
 
 ---
 
@@ -201,6 +201,101 @@ self._ssl_context = ssl.create_default_context(cafile=certifi.where())  # 原为
 - 验证:跑 pytest + 写一个独立 verify 脚本调真接口,产物落盘到 `data/diagnostics/`
 
 教训:haiku subagent 给的根因分析要审,**不能直接复制**。它倾向于把所有"看着不对"的事情都列成根因,实际可能只是它的执行环境问题(比如它用了 Python 3.12 framework 而项目实际是用 conda 3.10 跑)。
+
+---
+
+### 0.16 大规模集中收尾(2026-05-15)—— P0/P1/P2/P3 整轮处理完毕
+
+orchestrator 自主分派 7 个 haiku subagent(3 impl + 1 review + 1 cleanup + 2 Tier2/3 impl),处理 PROJECT_REVIEW 第五-六章里除 Tiger 替换之外的全部开放项。最终 **118/118 单测**,4 个 commit 推上线。
+
+#### 0.16.1 各 subagent 任务和结果
+
+| # | Subagent | 任务 | 文件 | 结果 |
+|---|---|---|---|---|
+| G | impl | P0-1 + P0-2:社交帖 body 600 截断、official_events 8→5 | `social_service.py` + `review_packets.py` | ✅ 109/109 |
+| H | impl | P1-1 + P3-3:preflight API key 状态表 + 社交全挂 WARN | `runtime_preflight.py` | ✅ 111/111 |
+| I | impl | P1-3 + P0-3:基本面/披露保底分 8→4 / 5→3 + 核心源全挂强制 WATCH | `scoring.py` + `pipeline.py` + `models.py` + `review_packets.py` | ✅ 114/114 |
+| K | review | 审 G+H+I 合并 diff | (read-only) | PASS,2 个 NOTE |
+| L | cleanup | 删 `_EVENT_BODY_CHAR_CAP` 死代码 + `data_quality` 抬到 packet 顶层 | `review_packets.py` | ✅ 114/114 |
+| M | impl | 0.15.4 social lookback 调参 + P3-2 全源失败集成测试 | `config/watchlist.toml` + `config.py` + `test_pipeline.py` | ✅ 115/115 |
+| N | impl | P2-1 HTTP 指数退避 retry + P3-1 partial_coverage 下负分对称减半 | `http.py` + `scoring.py` | ✅ 118/118 |
+
+#### 0.16.2 具体改动一览
+
+**5.1 上下文撑爆 / P0-1+P0-2**:
+- `social_service._cap_posts`:每条 surviving post 的 `body` 超 600 字符截断 + `"...[truncated]"` 标记
+- `review_packets`:`official_events[:8]` → `[:5]`,`_EVENT_BODY_CHAR_CAP` 之前是 placeholder(`OfficialEvent` 实际无 `body` 字段),已删
+- ⚠️ `social_rebound.py:103` 提到的关键词匹配在原 PROJECT_REVIEW 5.1A 里也点名了,本轮**未动**——影响小,等真出问题再处理
+
+**5.3 静默失败 / P1-1+P3-3**:
+- preflight 新增 API key 状态表(`ALPHAVANTAGE_API_KEY` / `FRED_API_KEY` / `SEC_USER_AGENT` / `DEEPSEEK_API_KEY` blocking;`EIA_API_KEY` + `REDDIT_*` WARN)
+- 当 `social.enabled=True` 但 reddit/x/forum 都关闭/空配时,WARN 一行
+
+**5.4 评分鲁棒性 / P1-3+P0-3+P3-1**:
+- `scoring.py:155` fundamentals 缺数据保底分 `8/30` → `4/30`
+- `scoring.py:162` sentiment 缺数据保底分 `5/15` → `3/15`
+- 新增 `cap_state_if_data_insufficient(state, source_health)`:`sec.success=False` 或 `price.success=False`(含 `daily_prices_cache partial=True`)时,**ADD/STARTER 强降 WATCH**,并把 `ScoreCard.data_insufficient=True`
+- `review_packet` 顶层新增 `data_quality: "ok" | "insufficient"`,主 agent 一眼能看到
+- `score_social_rebound`:`partial_coverage=True` 之前只清零正分、留满负分(原 5.4 问题 I 报告的非对称漏洞),现在**负分对半减(向 0 取整)**
+
+**5.2 数据稳定 / P2-1**:
+- `http.HttpClient.get`:3 次 attempt,backoff (1s, 2s),retry 条件 `URLError + HTTP 5xx + 429`(4xx 不重试,直接抛)
+- backoff 常数 module-level,测试可 monkeypatch 为 0 以提速
+
+**社交 lookback / 0.15.4**:
+- `lookback_hours: 72` → `168`(3 天 → 7 天)
+- `min_recent_posts: 10` → `6`
+- 起因:CRM E2E 显示 16 条帖只有 2 条落在 72h,新阈值让稀疏但真实数据能算出 social_rebound
+
+**集成测试 / P3-2**:
+- `test_pipeline_graceful_degradation_when_all_sources_fail`:全源 success=False,断言 pipeline 不崩、`data_insufficient=True`、`state ∈ {WATCH, REJECT}`
+
+#### 0.16.3 本轮 commit 列表(都已 push origin main)
+
+```
+c387fa3  HTTP retry middleware and symmetric partial-coverage social cap
+087a10c  Widen social lookback + assert graceful all-source-fail behavior
+a36c2e1  Tier 1 robustness: truncation, preflight visibility, data gating
+```
+
+#### 0.16.4 测试基线
+
+```
+状态:2026-05-15
+总测试数:118
+通过率:100%
+新增本轮:11 个(G:0 + H:2 + I:3 + L:0 + M:1 + N:3 + 2 个被更新的现有测试)
+```
+
+#### 0.16.5 派工流程总结
+
+**有效的模式**:
+1. orchestrator 把 spec 写到字段级 / 行号级,常数和命名都点名;haiku impl 几乎能一次过
+2. impl 后跟 review subagent,**review 不止一次抓到 impl 漏的 BLOCKER**(本批是 cache 兜底那一轮的 `statuses.append`)
+3. 复合任务按文件分组,避免 subagent 并行编辑冲突——本轮全部串行
+4. orchestrator 自己 `grep` 一遍 diff,把"超出 spec 的副效应"挑出来(例如 G 留下的 `_EVENT_BODY_CHAR_CAP` 死代码),再派 cleanup subagent
+
+**无效或要小心的模式**:
+- 让 haiku 自己决定"用多少阈值 / 怎么处理边界"会跑偏,必须 orchestrator 先定数值
+- haiku 写测试时可能加冗余 assert 或 fixture,review 时要查"是不是真测了 spec 要的行为"
+- 同一文件多个 subagent 并行 = 必出 merge 冲突,严格串行
+
+#### 0.16.6 仍未处理的(优先级低或被替换计划覆盖)
+
+| 项 | 现状 | 原因 |
+|---|---|---|
+| P2-2 StockTwits provider | 未做 | 价格 lane 走 Tiger,社交 lane 现有 Reddit 已够稳;StockTwits 等真有需要再开 |
+| P2-3 X provider early-abort | 未做 | X 整体默认 disabled,且短期没用户压力;Tiger 接好之后再决策 X 是不是真要 |
+| SEC/FRED/EIA 完整本地缓存 | 部分(SEC filing 已写但还没读取兜底) | 这几个源稳定性高,quota 也宽松;真出 quota 问题再做 |
+| 原 P0 step 9 给 AV 加 SQLite 日级缓存 | **作废** | Tiger Trader 计划已替换 AV;改名为 step 9'(实现 Tiger source),等用户拿到凭证启动 |
+
+#### 0.16.7 下次进场可以做的事
+
+按时间顺序排:
+1. **(用户)在 Tiger Trader 申请开发者凭证** → 触发 step 9'(haiku impl + review,工作量 3-4 小时)
+2. **观察一周**:用现在的 watchlist 跑日常 run-daily,看 `social_rebound != 0` 在多少票上稳定出现,验证 0.15.4 调参是否合适
+3. **填 `filing_summary_cache.sentiment` 字段**:目前是 placeholder `"unknown"`,可以加 DeepSeek 二次调用做 filing 摘要(P0 step 8 当时留下的 Phase 2)
+4. **SEC/FRED/EIA 本地日级缓存**:若 quota 问题真冒出来再做,模板可复用 P0 step 8 的写法
 
 ---
 
