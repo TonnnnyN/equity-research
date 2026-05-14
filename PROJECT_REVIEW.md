@@ -1,8 +1,8 @@
 # 市场情绪感知项目 —— 深度评审报告
 
 > 初版生成日期：2026-05-12
-> 最新更新：2026-05-14（0.11 新增：P0 step 8 SEC filing 缓存接入完成）
-> 当前代码版本：`74a77dc`（Wire filing_summary_cache writes into SEC client）
+> 最新更新：2026-05-14（0.13 新增：触发零结果诊断 + Tiger Trader 替换 AV 的方向决策）
+> 当前代码版本：`ce4e13e`
 
 ---
 
@@ -408,6 +408,64 @@ bucket_scores:
 - **#8** `official_events` 列表从 8 降到 5 还是别的
 
 剩下的(#2/#3/#5/#7/#9/#10)等 0.10.1 + 0.10.2 跑通再回来定。
+
+---
+
+### 0.13 触发零结果诊断 + Tiger Trader 决策(2026-05-14 当晚)
+
+#### 0.13.1 0 触发的真正原因(haiku 诊断 subagent 给的结论,已复核)
+
+不是触发逻辑 bug。是 **Alpha Vantage 25 次/天免费配额耗尽**:
+- run-daily 第一个调用打 QQQ 基准价时(UTC 13:03:40),AV 返回 `"our standard API rate limit is 25 requests per day"`
+- `alpha_vantage.py:67` 把 `_daily_limit_exhausted=True` 置位,后续所有调用直接 `return empty`
+- Stooq 备援同时返回 `empty csv response`
+- 33 个 ticker 全部拿不到价格 → `triggers.py:7` 的 `len(prices) < 21` 把所有人都丢进 `insufficient_price_history`
+
+**触发逻辑本身经实测无 bug**:subagent 用数据库里 2026-05-13 的缓存价跑 `compute_trigger`,得出本来应该触发的 4 只:
+
+| Ticker | 触发条件 |
+|---|---|
+| MSFT | relative_underperformance 13.59% + fresh_low |
+| CRM | 10日跌 8.49% + 相对跌 18.75% + fresh_low |
+| CEG | 10日跌 11.9% + 20日跌 13.44% + 相对跌 10.51% |
+| NRG | 10日跌 5.79% + 20日跌 8.34% + 相对跌 5.41% |
+
+诊断报告落 `data/diagnostics/trigger_diagnosis.md` + per-ticker JSON。
+
+#### 0.13.2 方向决策:用 Tiger Trader 替换 Alpha Vantage(价格 lane)
+
+用户决定后续直接换接口,价格数据走 **Tiger Trader API**。这一决策让本文之前规划的 **P0 step 9(给 AV 加日级 SQLite 缓存)作废**——既然要换源,不应该在将死的源上做工。
+
+新的等价工作改名为 **P0 step 9'**:写一个 Tiger Trader 价格 source
+
+- 新建 `sharing-resources/src/market_sentiment/sources/tiger.py`
+- 实现 `SourcePayload[list[PriceBar]]` 接口(与 `alpha_vantage.py` / `stooq.py` 同型)
+- 在 `pipeline.py` 把 Tiger 接入价格 fallback 链:**Tiger 主源 → AV 兜底(25/天用作低频校验)→ Stooq 兜底**
+- 缓存还是要做(沿用 step 8 模板,新建 `daily_price_cache` 表),只是写入的是 Tiger 的数据
+- 配置:`secrets.sh` 加 `TIGER_API_KEY` / `TIGER_TIGER_ID` / `TIGER_PRIVATE_KEY_PATH` 等
+
+**触发时机**:等用户拿到 Tiger Trader 的开发者凭证后启动,**不在本轮做**。
+
+**临时方案**(到 Tiger 接好前):每日 AV 配额够 watchlist 前 24 票即可(33 票里第 25 票开始静默挂)。短期可以缩 watchlist 到 ≤24 票,或接受"每天后段 ticker 拿不到价"。
+
+#### 0.13.3 本轮还要补的事(本文 0.14)
+
+诊断暴露了一个**与 AV 无关的 bug 候选**:Stooq 在 AV 挂掉时本应兜底,却也返回了 `empty csv response`。是 Stooq URL 拼错、返回格式变了、还是网络瞬时挂了——本轮要派 subagent 查清。如果 Stooq 是个真 bug,在 Tiger 接好之前的过渡期它是唯一兜底,值得修。
+
+另外,**今天 run-daily 0 触发** = **没有 review packet 被新写出** = `social_post_cache` / `filing_summary_cache` 的实跑填充也没观察到。要派 subagent 做一次绕开 AV 的"单票端到端"测试,把 CRM 从触发→社交→DeepSeek→缓存→报告完整跑一次。
+
+---
+
+### 0.14 本轮 subagent 派工计划(2026-05-14 晚)
+
+orchestrator(我)负责拆任务 + 验收,不动代码。所有 subagent 用 haiku。
+
+| # | 任务 | 是否需要先做 | 触发条件 |
+|---|---|---|---|
+| A | **Stooq 失败根因调查**:为何 `alpha_vantage` 挂掉之后 Stooq 返回 `empty csv response`。范围:`sources/stooq.py` + 抓一次 CRM 的实际 stooq 调用看是 URL / 返回格式 / 还是别的 | 现在 | 无依赖 |
+| B | **survey 现有 pipeline 能否走纯缓存价格**:`pipeline.py` 价格获取链里,有没有现成的"AV/Stooq 都挂时 fallback 读 SQLite price 缓存"代码路径,还是要新加 | 现在 | 无依赖,与 A 并行 |
+| C | **CRM 单票端到端 E2E 测试**:把 watchlist 临时改成 `CRM + QQQ`,跑 run-daily,确认链路打通:trigger 触发 → SEC + Reddit + DeepSeek → social_post_cache 填充 → filing_summary_cache 填充 → report.md 写出。跑完恢复 watchlist | A + B 后 | 取决于 A/B 结果决定怎么绕过价格问题 |
+| D(条件) | **Stooq bug 修复**:若 A 发现是 stooq.py 代码 bug,按 orchestrator 给的精确 diff 修 | A 完成 | 仅当 A=代码 bug |
 
 ---
 
