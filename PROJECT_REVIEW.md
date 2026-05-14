@@ -1,8 +1,8 @@
 # 市场情绪感知项目 —— 深度评审报告
 
 > 初版生成日期：2026-05-12
-> 最新更新：2026-05-14（0.13 新增：触发零结果诊断 + Tiger Trader 替换 AV 的方向决策）
-> 当前代码版本：`ce4e13e`
+> 最新更新：2026-05-14（0.15 新增：缓存价格 fallback 落地 + CRM 单票 E2E 真打通）
+> 当前代码版本：`dbdc6fe`
 
 ---
 
@@ -466,6 +466,65 @@ orchestrator(我)负责拆任务 + 验收,不动代码。所有 subagent 用 hai
 | B | **survey 现有 pipeline 能否走纯缓存价格**:`pipeline.py` 价格获取链里,有没有现成的"AV/Stooq 都挂时 fallback 读 SQLite price 缓存"代码路径,还是要新加 | 现在 | 无依赖,与 A 并行 |
 | C | **CRM 单票端到端 E2E 测试**:把 watchlist 临时改成 `CRM + QQQ`,跑 run-daily,确认链路打通:trigger 触发 → SEC + Reddit + DeepSeek → social_post_cache 填充 → filing_summary_cache 填充 → report.md 写出。跑完恢复 watchlist | A + B 后 | 取决于 A/B 结果决定怎么绕过价格问题 |
 | D(条件) | **Stooq bug 修复**:若 A 发现是 stooq.py 代码 bug,按 orchestrator 给的精确 diff 修 | A 完成 | 仅当 A=代码 bug |
+
+---
+
+### 0.15 本轮收尾结果(2026-05-14 晚)—— 全链路 E2E 第一次真打通
+
+#### 0.15.1 A、B subagent 结论
+
+- **A (Stooq 诊断)**:Stooq **官方策略变了**——现在要求 `apikey` 参数,免费但需要通过 captcha 在网页手工领取。`stooq.py` 之前不传 key,所以返回的都是"Get your apikey: ..."的纯文本说明,被当 CSV 解析就 0 行。orchestrator 自己 curl 三种变体复核确认。
+  - **决策**:既然用户后续要切 Tiger Trader,**不修 Stooq**,Stooq 接口在 Tiger 接好之前进入"已知挂"状态
+- **B (缓存价格 survey)**:`daily_prices` SQLite 表早就存在,每次成功 fetch 后 `Storage.upsert_prices()` 都在写,但**从来没人读**。`pipeline._fetch_prices_with_fallback` 当 AV+Stooq 都挂就返回空,不会兜底回缓存。survey 估"trivial,~20 行就能补上"
+
+#### 0.15.2 D + 复核 + F:缓存兜底落地
+
+- **D (impl)**:加 `Storage.read_cached_prices(ticker, days_back=60)` + 在 pipeline fallback 链末尾加缓存兜底块,`partial=True`,message 含 `"using cached prices through <iso_date>; AV+Stooq both unavailable"`。2 个新单测
+- **review subagent**:发现 **1 个 BLOCKER**——`cache_status` 没被 `statuses.append`,会导致 `source_health` 看不到缓存事件;1 个 WARN——`date.today()` 用本地时区,与项目其他 UTC 时间不一致
+- **F (review 修复)**:加 `statuses.append(cache_status)`、cutoff 改 `datetime.now(timezone.utc).date()`、扩展现有测试增加 4 行 assertion 防回归
+- **commit `dbdc6fe`** 推上 GitHub,109/109 单测通过
+
+#### 0.15.3 C subagent:CRM 单票 E2E 实测
+
+把 watchlist 临时改 `CRM + QQQ`,run-daily 一次跑通。**所有 7 个关键阶段全过**:
+
+| 阶段 | 验证项 | 结果 |
+|---|---|---|
+| 1 | 缓存兜底点亮 | ✅ CRM + QQQ 两个 `daily_prices_cache` source_health 项都是 `partial=True`,message 含 `"using cached prices through 2026-05-13"` |
+| 2 | trigger 触发 | ✅ 3 个 reason:10日跌 8.49% + 相对跌 18.75% + fresh_low |
+| 3 | SEC 拉数据 | ✅ 营收同比 +19.1%,经营现金流 +46.6% |
+| 4 | filing_summary_cache 填充 | ✅ CRM 写入约 963 行,横跨 Form 4 / 144 / 10-Q / 8-K / S-8 五种类型 |
+| 5 | Reddit 抓帖 | ✅ 16 条真帖 |
+| 6 | DeepSeek 真判 | ✅ social_post_cache 入库 7 bull / 6 bear / 3 neutral,**没有 `unknown` stub**,DeepSeek 确实跑通 |
+| 7 | report.md 写出 | ✅ CRM 分章生成,bucket_scores 5/6 维度填齐,基础总分 83/100(fundamentals 30,sentiment 9,chain_confirmation 20,price_flow 7,risk_red_flags 17,social_rebound 0),state = Watch |
+
+E2E 测试报告落 `data/diagnostics/crm_e2e_test.{json,md}`。
+
+#### 0.15.4 已知小问题(非 bug,记录用)
+
+**social_rebound = 0/10 的原因**:CRM 总共 16 条帖里,**只有 2 条落在近 72h 窗口**(`social.lookback_hours = 72`),低于 `social.min_recent_posts = 10` 门槛。social_rebound 评分本身要求"近期样本足够",2 条不够算,直接返回 0。
+
+- 这是社交评分算法的设计,不是 pipeline 或 DeepSeek 的 bug
+- 主 agent(Claude/Codex)读 review packet 时,看 `social_summary.recent_stance = 0.58`(轻度偏多)仍然可以做出有信息量的判断
+- 后续可能要做的调整:把 lookback_hours 拉宽到 168h(7 天)或把 min_recent_posts 降到 5,**等多积累几天数据后再校准**
+
+#### 0.15.5 本轮派工总结
+
+orchestrator(我)→ Haiku subagent 矩阵:
+
+| Subagent | 类型 | 任务 | 结果 |
+|---|---|---|---|
+| A | haiku 诊断 | Stooq 失败根因 | 找到 → API key 政策变更 |
+| B | haiku survey | pipeline 是否有缓存价格 fallback | 没有 → "trivial 20 行能加" |
+| D | haiku impl | 加缓存 fallback | 改对,但漏了 1 个 BLOCKER |
+| (review) | haiku review | 审 D 的 diff | 抓到 BLOCKER + WARN |
+| F | haiku fix | 补 BLOCKER + WARN + 防回归测试 | 落地,109/109 通过 |
+| C | haiku 测试 | CRM 单票 E2E | 7/7 阶段全过 |
+
+**关键收获**:
+- haiku impl 经常**遗漏副效应**(像 D 没 append cache_status),所以**配对 review subagent 是值得的**——这一对组合的失误率明显低于"单 impl 不审计"
+- orchestrator 写 spec 时把"必须有"的具体字符串(`"using cached prices through"`)写死,review 和测试两端都好对照
+- haiku 给的"诊断结论"在确认前必须 orchestrator 亲自复核——A 报告"Stooq 要 API key",我亲自 curl 三遍才信
 
 ---
 
