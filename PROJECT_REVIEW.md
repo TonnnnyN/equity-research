@@ -1239,3 +1239,91 @@ orchestrator(我)→ Haiku subagent 矩阵:
 ---
 
 *本文档基于代码版本 `0b64e9c`，结合源码文件 `scoring.py`、`social_service.py`、`x_provider.py`、`social_rebound.py`、`review_packets.py` 的直接阅读生成。*
+
+---
+
+## 八、2026-05-15 量化研究视角审计（Sonnet）
+
+派 Sonnet subagent 以 **1 周 – 1 个月持仓周期的量化研究员视角** 全量阅读项目，从 6 个维度审计严谨性。结论按优先级整理如下。
+
+### 已完成
+
+#### Freshness block（commit `6bde150`）
+- 在 review packet 顶层增加 `freshness` 字段，预计算 `fundamentals_age_days`、`fundamentals_filed_age_days`、`official_event_age_days`，并按阈值生成 `caveats` 字符串数组
+- > 100 天：`current quarter likely unreported`；60–100 天：`verify whether next quarter has been reported`；> 30 天事件：`no recent disclosures`
+- 138/138 测试通过；2 文件 +264 行
+- 解决问题：主 agent 不再容易把数月前的财报数字当作"当前财务状况"
+
+### 进行中 — Round 1（impl 已派 Subagent U，pending review）
+
+#### A. 价格源调整一致性（P0，audit 首要发现）
+- 问题：5 层 fallback 链中 Tiger 默认 `RightOption.no_right`（不复权），AV 用 `TIME_SERIES_DAILY` + `"4. close"`（未调整），Yahoo 用 `quote.close`（仅 split 调整，无 dividend），Stooq 已调整。源切换时（如 Tiger 失败转 Yahoo）若期间发生拆股/分红，会产生 phantom drawdown 触发假信号
+- 修复：
+  - `sources/tiger.py`：`get_bars(..., right=RightOption.br_forward)`
+  - `sources/alpha_vantage.py`：endpoint 换 `TIME_SERIES_DAILY_ADJUSTED`，close 字段换 `"5. adjusted close"`
+  - `sources/yahoo_finance.py`：从 `quote.close` 换到 `adjclose.adjclose`，保留 fallback
+
+#### B. Pharma layer 重分类（P1）
+- 问题：`config/watchlist.toml` 把 LLY/JNJ/MRK/ABBV/PFE/BMY/AMGN/GILD/REGN/VRTX 10 只医药股标为 `layer = "ai_applications"`（注释明确说是 workaround）。这导致两个错误：
+  1. 用 ai_applications 的高 beta 阈值（10d drawdown -8%），但医药股低 beta，容易在 PDUFA / 管线消息日触发假信号
+  2. `chain_confirmation` 用 same-layer peer 比较——LLY 被拿来跟 CRM / IOT 比，板块性 selloff 会被错误归类为 `COMPANY_SPECIFIC`，反而 +6 分加到 chain_confirmation
+- 修复：
+  - `models.py`：`Layer` 加 `pharma` 成员
+  - `config/watchlist.toml`：新增 `[pharma]` 层（thresholds: -6% / -10% / -5%，benchmark `PPH`），10 只股迁过去
+
+### 待启动 — Round 2（Round 1 落地后派单独 Haiku）
+
+#### C. Next-earnings 字段（P1）
+- 问题：SKILL.md 要求 `[T-3, T+5]` 事件窗口检查，但 Python pipeline 没有任何 next-earnings 查询。主 agent 只能从 SEC 已发布的 10-Q 标题里推断，无法识别"5 天后要财报"这种 1 周持仓决定性的情境
+- 计划：
+  - 新建 `sources/earnings_calendar.py`，调 Yahoo `/v10/finance/quoteSummary/{ticker}?modules=calendarEvents`，免费免 key
+  - 在 PipelineContext 中携带 `next_earnings_date: date | None`
+  - review packet 的 `freshness` 块（或新顶层字段）暴露 `next_earnings_date` 和 `days_to_next_earnings`
+  - **先暴露字段，不加硬 cap**，让主 agent 自己决定是否降级——保守起步，留观察空间
+  - 数据源失败时给 `None` 而非阻塞 pipeline
+
+### 已认领但延后
+
+#### D. 重新设计 `price_flow` 桶（P0，但需要设计决策）
+- audit 发现 `score_price_flow`（`scoring.py:245-260`）直接 scale 触发器用的 `ten_day_drawdown / twenty_day_drawdown / relative_underperformance`，与触发器**完全是同一组变量**——双重计分，机械地给跌得最惨的票最高分
+- 候选新语义（待用户决策）：
+  1. "回撤后形态" — 最近 3-5 日是否站上 5d MA、量能是否放大
+  2. "距 50d SMA 距离" — 偏离 MA 越远（无论方向）越弱
+  3. 直接删除桶，把 15 分重新分配
+- 现状：保留为 P0 / 需要先讨论新公式再派工
+
+#### E. 回测脚手架（P0，独立工程）
+- audit 把"零 backtest"列为单项最大缺口，但定位需要先想清楚：本 skill 是 LLM 主 agent 决策框架，不是自动交易策略。回测能验证的是规则引擎的 trigger frequency 和 bucket → forward return 关系，**不能**验证主 agent 的最终决策
+- 计划：新建 `sharing-resources/scripts/backtest_triggers.py`，walk-forward 跑 2 年历史数据，对每个 trigger 日记录 1w/2w/4w forward return，按 ActionState bucket 出命中率分布
+- 工作量估算：2-3 天，与主 pipeline 解耦，无回滚风险
+- 现状：待用户决定是否启动
+
+#### F. 社交分数 0 vs None 区分（P2）
+- 问题：NRG 类冷门票 0 帖被打 0 分，与"中性观望"的 0 分无法区分
+- 修复：`scoring.py:191-217` 让无样本时 social_rebound 返回 `None`，`total_score` 计算自动跳过该桶，`map_state` 阈值按动态可达 max 调整
+- 估算：< 50 行；与 Round 1 / Round 2 无冲突，可独立派
+
+#### G. `invalidate_if` / `rerate_if` 改为机器可读（P2）
+- 当前是 LLM 文本输出，无法在后续日 pipeline 自动 alert 失效
+- 修复：review packet schema 加 `invalidate_conditions: list[dict]` 字段，含 `metric / comparator / threshold`
+- 估算：中等工程量；要先想清楚字典 schema，需要单独设计讨论
+
+### 主动决定不做（audit 提到但 noted）
+
+- **Watchlist 静态/survivorship**：本 skill 定位是 pullback research（用户拿着标的来用），不是 screening。screening 是 `$us-smallmid-dislocation` 那个 skill 的事
+- **作者 / bot 过滤**（账号 age / karma）：数据采集层增强，价值真实但 ROI 低
+- **SEC 重述防 look-ahead**（取 earliest-filed 而非 latest）：真实问题但发生频率低，1w-1m 投资者影响有限
+- **Macro regime 调节评分**：建议把 macro 信号留给 LLM Layer 2 自行权衡，不嵌入规则引擎以免越权
+- **HK 微观结构**（交易时段、HKD 标准化）：独立审计议题，与本 skill 主流程解耦
+
+### 量化视角下系统现存优点（不要打破）
+
+- **Hard veto**（破产/欺诈/营收结构性断裂）客观、绑 SEC 文件，正确覆盖一切其他分数（`scoring.py:263-305`）
+- **`cap_state_if_data_insufficient`** 在 SEC 或新鲜价格缺失时把 Add/Starter 降到 Watch，保守且测试覆盖充分
+- **`apply_social_guardrail`** 阻止稀疏社交数据单独把 Reject 升级，防止社交噪声决定 margin（`scoring.py:322-329`）
+- **Layer 1 / Layer 2 分离**：规则引擎纯 advisory，主 agent 必须先独立阅读 Layer 2 raw evidence 再回头看 bucket scores，正确地把规则引擎定位为 sanity check
+- **Freshness block** 让 stale data 公开可见，主 agent 无法"无意中"把陈旧数字当 current
+
+---
+
+*本节基于 commit `6bde150`，结合 Sonnet 中长线量化视角审计报告（2026-05-15）整理。*
