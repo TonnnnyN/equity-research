@@ -773,3 +773,132 @@ class ReviewPacketTests(TestCase):
         self.assertIsNone(freshness["official_event_age_days"])
         self.assertTrue(any("no official events available" in caveat for caveat in freshness["caveats"]))
 
+    def test_earnings_calendar_block_with_data(self) -> None:
+        """Test earnings_calendar block when context has fresh earnings data."""
+        from market_sentiment.models import EarningsCalendar
+
+        security = Security(ticker="MSFT", name="Microsoft", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 5, 15)
+        earnings_date = date(2026, 7, 18)
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+            earnings_calendar=EarningsCalendar(
+                ticker="MSFT",
+                next_earnings_date=earnings_date,
+                is_estimate=False,
+                fetched_at=datetime(2026, 5, 15, 10, 0, 0),
+            ),
+        )
+        scorecard = ScoreCard(
+            run_date=run_date,
+            security=security,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            triggered=True,
+            trigger=TriggerResult(triggered=True, reasons=[]),
+            fundamentals=BucketScore("fundamentals", 10, 30),
+            sentiment=BucketScore("sentiment", 5, 15),
+            chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+            price_flow=BucketScore("price_flow", 3, 15),
+            risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+            total_score=70,
+            state=ActionState.WATCH,
+        )
+
+        packet = build_review_packet(datetime(2026, 5, 15, 14, 0, 0), context, scorecard)
+
+        earnings_calendar = packet["earnings_calendar"]
+        self.assertEqual(earnings_calendar["status"], "ok")
+        self.assertEqual(earnings_calendar["next_earnings_date"], "2026-07-18")
+        self.assertEqual(earnings_calendar["days_to_next_earnings"], 64)
+        self.assertFalse(earnings_calendar["is_estimate"])
+
+    def test_earnings_calendar_block_unavailable(self) -> None:
+        """Test earnings_calendar block when context.earnings_calendar exists but has no date."""
+        from market_sentiment.models import EarningsCalendar
+
+        security = Security(ticker="SMALL_CAP", name="Small Cap", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 5, 15)
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+            earnings_calendar=EarningsCalendar(
+                ticker="SMALL_CAP",
+                next_earnings_date=None,
+                is_estimate=False,
+                fetched_at=datetime(2026, 5, 15, 10, 0, 0),
+            ),
+        )
+        scorecard = ScoreCard(
+            run_date=run_date,
+            security=security,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            triggered=True,
+            trigger=TriggerResult(triggered=True, reasons=[]),
+            fundamentals=BucketScore("fundamentals", 10, 30),
+            sentiment=BucketScore("sentiment", 5, 15),
+            chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+            price_flow=BucketScore("price_flow", 3, 15),
+            risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+            total_score=70,
+            state=ActionState.WATCH,
+        )
+
+        packet = build_review_packet(datetime(2026, 5, 15, 14, 0, 0), context, scorecard)
+
+        earnings_calendar = packet["earnings_calendar"]
+        self.assertEqual(earnings_calendar["status"], "unavailable")
+        self.assertIsNone(earnings_calendar["next_earnings_date"])
+        self.assertIsNone(earnings_calendar["days_to_next_earnings"])
+        self.assertIsNone(earnings_calendar["is_estimate"])
+
+    def test_earnings_calendar_block_missing(self) -> None:
+        """Test earnings_calendar block when context.earnings_calendar is None."""
+        security = Security(ticker="MSFT", name="Microsoft", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 5, 15)
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+            earnings_calendar=None,
+        )
+        scorecard = ScoreCard(
+            run_date=run_date,
+            security=security,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            triggered=True,
+            trigger=TriggerResult(triggered=True, reasons=[]),
+            fundamentals=BucketScore("fundamentals", 10, 30),
+            sentiment=BucketScore("sentiment", 5, 15),
+            chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+            price_flow=BucketScore("price_flow", 3, 15),
+            risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+            total_score=70,
+            state=ActionState.WATCH,
+        )
+
+        packet = build_review_packet(datetime(2026, 5, 15, 14, 0, 0), context, scorecard)
+
+        earnings_calendar = packet["earnings_calendar"]
+        self.assertEqual(earnings_calendar["status"], "failed")
+        self.assertIsNone(earnings_calendar["next_earnings_date"])
+        self.assertIsNone(earnings_calendar["days_to_next_earnings"])
+        self.assertIsNone(earnings_calendar["is_estimate"])
+

@@ -36,6 +36,7 @@ def build_review_packet(
             "run_date": scorecard.run_date,
             "data_quality": "insufficient" if scorecard.data_insufficient else "ok",
             "freshness": _build_freshness(scorecard, context),
+            "earnings_calendar": _build_earnings_calendar(scorecard, context),
             "security": asdict(scorecard.security),
             "benchmark_ticker": context.benchmark_ticker,
             "rule_engine_precheck": {
@@ -124,6 +125,34 @@ def _serialize_fundamentals(snapshot: FundamentalSnapshot | None) -> dict[str, A
             },
         }
     )
+
+
+def _build_earnings_calendar(scorecard: ScoreCard, context: PipelineContext) -> dict[str, Any]:
+    """Build earnings calendar block to expose next earnings date to the agent."""
+    run_date = scorecard.run_date
+    earnings_calendar = context.earnings_calendar
+
+    next_earnings_date = None
+    days_to_next_earnings = None
+    is_estimate = None
+    status = "failed"
+
+    if earnings_calendar is not None:
+        next_earnings_date = earnings_calendar.next_earnings_date
+
+        if next_earnings_date is not None:
+            days_to_next_earnings = (next_earnings_date - run_date).days
+            is_estimate = earnings_calendar.is_estimate
+            status = "ok"
+        else:
+            status = "unavailable"
+
+    return {
+        "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date is not None else None,
+        "days_to_next_earnings": days_to_next_earnings,
+        "is_estimate": is_estimate,
+        "status": status,
+    }
 
 
 def _build_freshness(scorecard: ScoreCard, context: PipelineContext) -> dict[str, Any]:

@@ -306,6 +306,14 @@ class ScoreCard:
         return _serialize(asdict(self))
 
 
+@dataclass(frozen=True)
+class EarningsCalendar:
+    ticker: str
+    next_earnings_date: date | None
+    is_estimate: bool
+    fetched_at: datetime
+
+
 @dataclass(slots=True)
 class PipelineContext:
     security: Security
@@ -321,6 +329,7 @@ class PipelineContext:
     social_source_statuses: list[SourceStatus] = field(default_factory=list)
     options_snapshot: OptionSnapshot | None = None
     options_source_statuses: list[SourceStatus] = field(default_factory=list)
+    earnings_calendar: EarningsCalendar | None = None
 
 
 @dataclass(slots=True)

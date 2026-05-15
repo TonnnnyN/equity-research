@@ -24,6 +24,7 @@ from market_sentiment.social_service import SocialSignalService
 from market_sentiment.subagent_sentiment import build_default_sentiment_judge
 from market_sentiment.sources.alpha_vantage import AlphaVantageClient
 from market_sentiment.sources.base import SourcePayload
+from market_sentiment.sources.earnings_calendar import EarningsCalendarClient
 from market_sentiment.sources.eia import EiaClient
 from market_sentiment.sources.options_alpha_vantage import AlphaVantageOptionsClient
 from market_sentiment.sources.fred import FredClient
@@ -48,6 +49,7 @@ class DailyPipeline:
         self.stooq = StooqClient(self.http, self.storage)
         self.fred = FredClient(self.http, self.storage)
         self.eia = EiaClient(self.http, self.storage)
+        self.earnings_calendar = EarningsCalendarClient(self.http, self.storage)
         self.options = AlphaVantageOptionsClient(self.http, self.storage, self.config.options)
         self.social = SocialSignalService(
             config=self.config,
@@ -121,6 +123,18 @@ class DailyPipeline:
                 context.options_snapshot = options_payload.data
                 context.options_source_statuses = [options_payload.status]
                 all_statuses.append(options_payload.status)
+            # Fetch next earnings date — this lane MUST NOT block the pipeline and MUST NOT mark partial_coverage
+            # So we add the status to all_statuses for reporting, but NOT to context.source_statuses
+            try:
+                earnings_payload = self.earnings_calendar.fetch_next_earnings(context.security.ticker, run_date)
+                context.earnings_calendar = earnings_payload.data
+                all_statuses.append(earnings_payload.status)
+            except Exception as exc:
+                context.earnings_calendar = None
+                failure_status = self._failure_status(
+                    "yahoo_earnings_calendar", f"Failed to fetch earnings calendar for {context.security.ticker}: {exc}"
+                )
+                all_statuses.append(failure_status)
             peer_contexts = layer_peers[context.security.layer]
             event_tag = classify_event_tag(context, peer_contexts)
             scorecard = build_scorecard(
