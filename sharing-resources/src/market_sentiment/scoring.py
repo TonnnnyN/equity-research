@@ -330,7 +330,12 @@ def apply_social_guardrail(base_state: ActionState, candidate_state: ActionState
 
 
 def cap_state_if_data_insufficient(state: ActionState, source_health: list[SourceStatus]) -> tuple[ActionState, bool]:
-    """If both SEC submissions and price data are missing/empty, cap state at WATCH.
+    """Cap state at WATCH when core data lanes (SEC + a fresh non-partial price source) are missing.
+
+    A price source counts as "fresh" only when success=True and partial=False.
+    daily_prices_cache is intentionally excluded because pipeline marks it
+    partial=True (cache fallback should not elevate confidence).
+
     Returns (possibly-downgraded state, insufficient_flag).
     """
     sec_ok = any(
@@ -338,7 +343,7 @@ def cap_state_if_data_insufficient(state: ActionState, source_health: list[Sourc
         for s in source_health
     )
     price_ok = any(
-        s.source in ("alpha_vantage", "stooq") and s.success and not s.partial
+        s.source in ("tiger", "yahoo_chart", "alpha_vantage", "stooq") and s.success and not s.partial
         for s in source_health
     )
     if sec_ok and price_ok:

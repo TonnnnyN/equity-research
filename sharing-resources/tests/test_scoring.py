@@ -193,3 +193,30 @@ class ScoringTests(TestCase):
         result_state, insufficient = cap_state_if_data_insufficient(ActionState.ADD, source_health)
         self.assertEqual(result_state, ActionState.WATCH)
         self.assertTrue(insufficient)
+
+    def test_cap_state_not_insufficient_when_tiger_succeeds(self) -> None:
+        source_health = [
+            SourceStatus(source="sec", success=True, partial=False),
+            SourceStatus(source="tiger", success=True, partial=False),
+        ]
+        result_state, insufficient = cap_state_if_data_insufficient(ActionState.STARTER, source_health)
+        self.assertEqual(result_state, ActionState.STARTER)
+        self.assertFalse(insufficient)
+
+    def test_cap_state_not_insufficient_when_yahoo_succeeds(self) -> None:
+        source_health = [
+            SourceStatus(source="sec", success=True, partial=False),
+            SourceStatus(source="yahoo_chart", success=True, partial=False),
+        ]
+        result_state, insufficient = cap_state_if_data_insufficient(ActionState.ADD, source_health)
+        self.assertEqual(result_state, ActionState.ADD)
+        self.assertFalse(insufficient)
+
+    def test_cap_state_insufficient_when_only_cache_serves_price(self) -> None:
+        source_health = [
+            SourceStatus(source="sec", success=True, partial=False),
+            SourceStatus(source="daily_prices_cache", success=True, partial=True),
+        ]
+        result_state, insufficient = cap_state_if_data_insufficient(ActionState.STARTER, source_health)
+        self.assertEqual(result_state, ActionState.WATCH)
+        self.assertTrue(insufficient)
