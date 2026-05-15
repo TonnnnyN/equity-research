@@ -113,6 +113,26 @@ def _build_api_key_checks(config: ProjectConfig) -> list[PreflightCheck]:
                         blocking=True,
                     )
                 )
+                # Check for token file in the same directory as config file
+                token_path = config_path.parent / "tiger_openapi_token.properties"
+                if token_path.exists():
+                    checks.append(
+                        PreflightCheck(
+                            "Tiger config: token file",
+                            True,
+                            f"token file present at {token_path}",
+                            blocking=False,
+                        )
+                    )
+                else:
+                    checks.append(
+                        PreflightCheck(
+                            "Tiger config: token file",
+                            False,
+                            f"tiger_openapi_token.properties not found at {token_path}; Tiger calls will fail with code=2400 user token cannot be empty until added",
+                            blocking=False,
+                        )
+                    )
         elif config_path.is_dir():
             props_file = config_path / "tiger_openapi_config.properties"
             if not props_file.exists():
@@ -133,6 +153,26 @@ def _build_api_key_checks(config: ProjectConfig) -> list[PreflightCheck]:
                         blocking=True,
                     )
                 )
+                # Check for token file in the same directory
+                token_path = config_path / "tiger_openapi_token.properties"
+                if token_path.exists():
+                    checks.append(
+                        PreflightCheck(
+                            "Tiger config: token file",
+                            True,
+                            f"token file present at {token_path}",
+                            blocking=False,
+                        )
+                    )
+                else:
+                    checks.append(
+                        PreflightCheck(
+                            "Tiger config: token file",
+                            False,
+                            f"tiger_openapi_token.properties not found at {token_path}; Tiger calls will fail with code=2400 user token cannot be empty until added",
+                            blocking=False,
+                        )
+                    )
         else:
             checks.append(
                 PreflightCheck(

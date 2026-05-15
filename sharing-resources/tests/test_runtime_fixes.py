@@ -384,3 +384,40 @@ class RuntimeFixTests(TestCase):
 
                 self.assertIn("HTTP 404", str(cm.exception))
                 self.assertEqual(attempt_count[0], 1)
+
+    def test_preflight_warns_when_tiger_token_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            pipeline, old_env = make_pipeline(tmp)
+            saved_keys = {}
+            try:
+                # Set required API keys for preflight to pass
+                for key in ["ALPHAVANTAGE_API_KEY", "FRED_API_KEY", "SEC_USER_AGENT", "DEEPSEEK_API_KEY"]:
+                    saved_keys[key] = os.environ.pop(key, None)
+                    os.environ[key] = "test_key_min_length_6"
+
+                # Create a temporary directory with tiger_openapi_config.properties but NO token file
+                tiger_config_dir = Path(tmp) / "tiger_config"
+                tiger_config_dir.mkdir()
+                (tiger_config_dir / "tiger_openapi_config.properties").touch()
+                saved_keys["TIGER_CONFIG_PATH"] = os.environ.pop("TIGER_CONFIG_PATH", None)
+                os.environ["TIGER_CONFIG_PATH"] = str(tiger_config_dir)
+
+                pipeline.config.social.enabled = False
+                pipeline.config.options.enabled = False
+
+                summary = pipeline.preflight()
+
+                # Check for the token file warning
+                token_checks = [c for c in summary.checks if c.name == "Tiger config: token file"]
+                self.assertEqual(len(token_checks), 1)
+                token_check = token_checks[0]
+                self.assertFalse(token_check.ok)
+                self.assertFalse(token_check.blocking)
+                self.assertIn("not found", token_check.message)
+            finally:
+                for key, value in saved_keys.items():
+                    if value is not None:
+                        os.environ[key] = value
+                    else:
+                        os.environ.pop(key, None)
+                restore_env(old_env)
