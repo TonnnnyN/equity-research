@@ -96,6 +96,33 @@ class TigerClientCredentialsTests(TestCase):
                 self.assertEqual(payload.data, [])
 
 
+def _create_mock_tigeropen_modules() -> dict[str, Any]:
+    """Helper to create complete mock tigeropen module structure with RightOption."""
+    # Create mock RightOption enum
+    mock_right_option = type('RightOption', (), {'br_forward': 'br_forward'})()
+
+    # Create module structure
+    tigeropen_module = ModuleType("tigeropen")
+    tigeropen_common_module = ModuleType("tigeropen.common")
+    tigeropen_consts_module = ModuleType("tigeropen.common.consts")
+    tigeropen_tiger_open_config_module = ModuleType("tigeropen.tiger_open_config")
+    tigeropen_quote_module = ModuleType("tigeropen.quote")
+    tigeropen_quote_client_module = ModuleType("tigeropen.quote.quote_client")
+
+    tigeropen_consts_module.RightOption = mock_right_option
+    tigeropen_tiger_open_config_module.TigerOpenClientConfig = Mock()
+    tigeropen_quote_client_module.QuoteClient = Mock()
+
+    return {
+        "tigeropen": tigeropen_module,
+        "tigeropen.common": tigeropen_common_module,
+        "tigeropen.common.consts": tigeropen_consts_module,
+        "tigeropen.tiger_open_config": tigeropen_tiger_open_config_module,
+        "tigeropen.quote": tigeropen_quote_module,
+        "tigeropen.quote.quote_client": tigeropen_quote_client_module,
+    }
+
+
 class TigerClientSDKImportTests(TestCase):
     """Test SDK availability checks."""
 
@@ -117,6 +144,7 @@ class TigerClientSDKImportTests(TestCase):
                     "tigeropen": None,
                     "tigeropen.common": None,
                     "tigeropen.common.consts": None,
+                    "tigeropen.tiger_open_config": None,
                     "tigeropen.quote": None,
                     "tigeropen.quote.quote_client": None,
                 }
@@ -168,28 +196,13 @@ class TigerClientSuccessTests(TestCase):
                 }
                 fake_df = pd.DataFrame(df_data)
 
-                # Create mock tigeropen modules
-                mock_config_class = Mock()
-                mock_quote_client_class = Mock()
+                # Get mock modules with RightOption
+                mock_modules = _create_mock_tigeropen_modules()
+                mock_config_class = mock_modules["tigeropen.tiger_open_config"].TigerOpenClientConfig
+                mock_quote_client_class = mock_modules["tigeropen.quote.quote_client"].QuoteClient
                 mock_quote_instance = Mock()
                 mock_quote_client_class.return_value = mock_quote_instance
                 mock_quote_instance.get_bars.return_value = fake_df
-
-                # Create module structure
-                tigeropen_module = ModuleType("tigeropen")
-                tigeropen_tiger_open_config_module = ModuleType("tigeropen.tiger_open_config")
-                tigeropen_quote_module = ModuleType("tigeropen.quote")
-                tigeropen_quote_client_module = ModuleType("tigeropen.quote.quote_client")
-
-                tigeropen_tiger_open_config_module.TigerOpenClientConfig = mock_config_class
-                tigeropen_quote_client_module.QuoteClient = mock_quote_client_class
-
-                mock_modules = {
-                    "tigeropen": tigeropen_module,
-                    "tigeropen.tiger_open_config": tigeropen_tiger_open_config_module,
-                    "tigeropen.quote": tigeropen_quote_module,
-                    "tigeropen.quote.quote_client": tigeropen_quote_client_module,
-                }
 
                 with patch.dict(
                     os.environ,
@@ -233,6 +246,12 @@ class TigerClientSuccessTests(TestCase):
                 called_props_path = called_args.kwargs.get("props_path")
                 self.assertEqual(str(Path(props_dir).resolve()), str(Path(called_props_path).resolve()))
 
+                # Verify get_bars was called with right=RightOption.br_forward
+                get_bars_args = mock_quote_instance.get_bars.call_args
+                self.assertIsNotNone(get_bars_args)
+                self.assertIn("right", get_bars_args.kwargs)
+                self.assertEqual(get_bars_args.kwargs["right"], "br_forward")
+
     def test_empty_dataframe_returns_partial(self) -> None:
         """Test that an empty DataFrame response returns partial failure."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -249,28 +268,12 @@ class TigerClientSuccessTests(TestCase):
                 # Create empty DataFrame
                 fake_df = pd.DataFrame()
 
-                # Create mock tigeropen modules
-                mock_config_class = Mock()
-                mock_quote_client_class = Mock()
+                # Get mock modules with RightOption
+                mock_modules = _create_mock_tigeropen_modules()
+                mock_quote_client_class = mock_modules["tigeropen.quote.quote_client"].QuoteClient
                 mock_quote_instance = Mock()
                 mock_quote_client_class.return_value = mock_quote_instance
                 mock_quote_instance.get_bars.return_value = fake_df
-
-                # Create module structure
-                tigeropen_module = ModuleType("tigeropen")
-                tigeropen_tiger_open_config_module = ModuleType("tigeropen.tiger_open_config")
-                tigeropen_quote_module = ModuleType("tigeropen.quote")
-                tigeropen_quote_client_module = ModuleType("tigeropen.quote.quote_client")
-
-                tigeropen_tiger_open_config_module.TigerOpenClientConfig = mock_config_class
-                tigeropen_quote_client_module.QuoteClient = mock_quote_client_class
-
-                mock_modules = {
-                    "tigeropen": tigeropen_module,
-                    "tigeropen.tiger_open_config": tigeropen_tiger_open_config_module,
-                    "tigeropen.quote": tigeropen_quote_module,
-                    "tigeropen.quote.quote_client": tigeropen_quote_client_module,
-                }
 
                 with patch.dict(
                     os.environ,
@@ -301,28 +304,12 @@ class TigerClientSuccessTests(TestCase):
                 props_file = Path(props_dir) / "tiger_openapi_config.properties"
                 props_file.touch()
 
-                # Create mock tigeropen modules
-                mock_config_class = Mock()
-                mock_quote_client_class = Mock()
+                # Get mock modules with RightOption
+                mock_modules = _create_mock_tigeropen_modules()
+                mock_quote_client_class = mock_modules["tigeropen.quote.quote_client"].QuoteClient
                 mock_quote_instance = Mock()
                 mock_quote_client_class.return_value = mock_quote_instance
                 mock_quote_instance.get_bars.side_effect = RuntimeError("auth failed")
-
-                # Create module structure
-                tigeropen_module = ModuleType("tigeropen")
-                tigeropen_tiger_open_config_module = ModuleType("tigeropen.tiger_open_config")
-                tigeropen_quote_module = ModuleType("tigeropen.quote")
-                tigeropen_quote_client_module = ModuleType("tigeropen.quote.quote_client")
-
-                tigeropen_tiger_open_config_module.TigerOpenClientConfig = mock_config_class
-                tigeropen_quote_client_module.QuoteClient = mock_quote_client_class
-
-                mock_modules = {
-                    "tigeropen": tigeropen_module,
-                    "tigeropen.tiger_open_config": tigeropen_tiger_open_config_module,
-                    "tigeropen.quote": tigeropen_quote_module,
-                    "tigeropen.quote.quote_client": tigeropen_quote_client_module,
-                }
 
                 with patch.dict(
                     os.environ,
@@ -364,28 +351,12 @@ class TigerClientSuccessTests(TestCase):
                 }
                 fake_df = pd.DataFrame(df_data)
 
-                # Create mock tigeropen modules
-                mock_config_class = Mock()
-                mock_quote_client_class = Mock()
+                # Get mock modules with RightOption
+                mock_modules = _create_mock_tigeropen_modules()
+                mock_quote_client_class = mock_modules["tigeropen.quote.quote_client"].QuoteClient
                 mock_quote_instance = Mock()
                 mock_quote_client_class.return_value = mock_quote_instance
                 mock_quote_instance.get_bars.return_value = fake_df
-
-                # Create module structure
-                tigeropen_module = ModuleType("tigeropen")
-                tigeropen_tiger_open_config_module = ModuleType("tigeropen.tiger_open_config")
-                tigeropen_quote_module = ModuleType("tigeropen.quote")
-                tigeropen_quote_client_module = ModuleType("tigeropen.quote.quote_client")
-
-                tigeropen_tiger_open_config_module.TigerOpenClientConfig = mock_config_class
-                tigeropen_quote_client_module.QuoteClient = mock_quote_client_class
-
-                mock_modules = {
-                    "tigeropen": tigeropen_module,
-                    "tigeropen.tiger_open_config": tigeropen_tiger_open_config_module,
-                    "tigeropen.quote": tigeropen_quote_module,
-                    "tigeropen.quote.quote_client": tigeropen_quote_client_module,
-                }
 
                 with patch.dict(
                     os.environ,
@@ -431,26 +402,12 @@ class TigerClientSuccessTests(TestCase):
                     'volume': [1000000.0],
                 })
 
-                mock_config_class = Mock()
-                mock_quote_client_class = Mock()
+                # Get mock modules with RightOption
+                mock_modules = _create_mock_tigeropen_modules()
+                mock_quote_client_class = mock_modules["tigeropen.quote.quote_client"].QuoteClient
                 mock_quote_instance = Mock()
                 mock_quote_client_class.return_value = mock_quote_instance
                 mock_quote_instance.get_bars.return_value = fake_df
-
-                tigeropen_module = ModuleType("tigeropen")
-                tigeropen_tiger_open_config_module = ModuleType("tigeropen.tiger_open_config")
-                tigeropen_quote_module = ModuleType("tigeropen.quote")
-                tigeropen_quote_client_module = ModuleType("tigeropen.quote.quote_client")
-
-                tigeropen_tiger_open_config_module.TigerOpenClientConfig = mock_config_class
-                tigeropen_quote_client_module.QuoteClient = mock_quote_client_class
-
-                mock_modules = {
-                    "tigeropen": tigeropen_module,
-                    "tigeropen.tiger_open_config": tigeropen_tiger_open_config_module,
-                    "tigeropen.quote": tigeropen_quote_module,
-                    "tigeropen.quote.quote_client": tigeropen_quote_client_module,
-                }
 
                 with patch.dict(os.environ, {"TIGER_CONFIG_PATH": props_dir}, clear=True):
                     with patch.dict(sys.modules, mock_modules):

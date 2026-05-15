@@ -20,6 +20,11 @@ drawdown_10d = -0.05
 drawdown_20d = -0.08
 relative_20d = -0.04
 
+[triggers.pharma]
+drawdown_10d = -0.06
+drawdown_20d = -0.10
+relative_20d = -0.05
+
 [macro]
 fred_series = ["DGS10", "DFF"]
 eia_natural_gas_route = "/v2/natural-gas/pri/sum/data/"
@@ -151,66 +156,64 @@ name = "CrowdStrike Holdings, Inc."
 layer = "ai_applications"
 benchmark = "QQQ"
 
-# Large-cap pharma giants remain under the ai_applications runtime layer
-# so the existing rule engine can process them without a code change.
 [[tickers]]
 ticker = "LLY"
 name = "Eli Lilly and Company"
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "JNJ"
 name = "Johnson & Johnson"
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "MRK"
 name = "Merck & Co., Inc."
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "ABBV"
 name = "AbbVie Inc."
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "PFE"
 name = "Pfizer Inc."
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "BMY"
 name = "Bristol-Myers Squibb Company"
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "AMGN"
 name = "Amgen Inc."
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "GILD"
 name = "Gilead Sciences, Inc."
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "REGN"
 name = "Regeneron Pharmaceuticals, Inc."
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 [[tickers]]
 ticker = "VRTX"
 name = "Vertex Pharmaceuticals Incorporated"
-layer = "ai_applications"
+layer = "pharma"
 benchmark = "PPH"
 
 # HK-listed China robotics leaders remain under the ai_applications

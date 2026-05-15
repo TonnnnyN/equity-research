@@ -52,7 +52,7 @@ class AlphaVantageClient:
         response = self._http.get(
             self.base_url,
             params={
-                "function": "TIME_SERIES_DAILY",
+                "function": "TIME_SERIES_DAILY_ADJUSTED",
                 "symbol": ticker,
                 "apikey": self._api_key,
                 "outputsize": "compact",
@@ -80,7 +80,7 @@ class AlphaVantageClient:
                 raw_path=raw_path,
             )
         raw_path = self._storage.write_raw_json(run_date, "alpha_vantage", ticker.lower(), payload)
-        time_series = payload.get("Time Series (Daily)", {})
+        time_series = payload.get("Time Series (Daily Adjusted)", {})
         prices: list[PriceBar] = []
         for trading_day, values in sorted(time_series.items()):
             prices.append(
@@ -90,8 +90,8 @@ class AlphaVantageClient:
                     open=float(values["1. open"]),
                     high=float(values["2. high"]),
                     low=float(values["3. low"]),
-                    close=float(values["4. close"]),
-                    volume=float(values.get("5. volume", 0.0)),
+                    close=float(values["5. adjusted close"]),
+                    volume=float(values.get("6. volume", 0.0)),
                     source="alpha_vantage",
                     source_url=safe_url,
                     ingested_at=ingested_at,

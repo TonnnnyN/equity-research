@@ -147,13 +147,19 @@ class YahooFinanceClient:
             lows = quotes.get("low", [])
             closes = quotes.get("close", [])
             volumes = quotes.get("volume", [])
+            # Extract adjusted closes when available; fall back to unadjusted closes
+            adjclose_blocks = indicators.get("adjclose", [])
+            adjcloses = adjclose_blocks[0].get("adjclose", []) if adjclose_blocks else []
 
             prices: list[PriceBar] = []
             safe_url = getattr(response, "safe_url", getattr(response, "url", None))
 
             for i, timestamp in enumerate(timestamps):
-                # Skip rows with missing close prices
+                # Prefer adjusted close when available; fall back to unadjusted close
                 close = closes[i] if i < len(closes) else None
+                if i < len(adjcloses) and adjcloses[i] is not None:
+                    close = adjcloses[i]
+
                 if close is None or close == 0:
                     continue
 

@@ -10,6 +10,7 @@ class Layer(StrEnum):
     AI_APPLICATIONS = "ai_applications"
     COMPUTE = "compute"
     UTILITIES = "utilities"
+    PHARMA = "pharma"
 
 
 class EventTag(StrEnum):

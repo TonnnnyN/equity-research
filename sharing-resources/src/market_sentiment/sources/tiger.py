@@ -126,6 +126,7 @@ class TigerClient:
 
         # Import tigeropen SDK (lazy import to avoid startup failures if SDK not installed)
         try:
+            from tigeropen.common.consts import RightOption
             from tigeropen.tiger_open_config import TigerOpenClientConfig
             from tigeropen.quote.quote_client import QuoteClient
         except ImportError:
@@ -173,6 +174,7 @@ class TigerClient:
                 begin_time=begin_date.isoformat(),
                 end_time=run_date.isoformat(),
                 limit=251,  # Default limit covers up to ~1 year of trading days
+                right=RightOption.br_forward,  # Back-adjust for splits/dividends to today's basis
             )
         except Exception as exc:
             return SourcePayload(
