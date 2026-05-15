@@ -35,6 +35,7 @@ def build_review_packet(
             "generated_at": generated_at,
             "run_date": scorecard.run_date,
             "data_quality": "insufficient" if scorecard.data_insufficient else "ok",
+            "freshness": _build_freshness(scorecard, context),
             "security": asdict(scorecard.security),
             "benchmark_ticker": context.benchmark_ticker,
             "rule_engine_precheck": {
@@ -123,6 +124,77 @@ def _serialize_fundamentals(snapshot: FundamentalSnapshot | None) -> dict[str, A
             },
         }
     )
+
+
+def _build_freshness(scorecard: ScoreCard, context: PipelineContext) -> dict[str, Any]:
+    """Build freshness block to expose data ages explicitly to the agent."""
+    run_date = scorecard.run_date
+    fundamentals = context.fundamentals
+    official_events = context.official_events
+
+    # Compute fundamentals ages
+    fundamentals_period_end = None
+    fundamentals_filed_on = None
+    fundamentals_age_days = None
+    fundamentals_filed_age_days = None
+    if fundamentals is not None:
+        fundamentals_period_end = fundamentals.period_end
+        fundamentals_filed_on = fundamentals.filed_on
+        if fundamentals.period_end is not None:
+            fundamentals_age_days = (run_date - fundamentals.period_end).days
+        if fundamentals.filed_on is not None:
+            fundamentals_filed_age_days = (run_date - fundamentals.filed_on).days
+
+    # Compute official event ages
+    latest_official_event_date = None
+    official_event_age_days = None
+    if official_events:
+        latest_event = max(official_events, key=lambda e: e.event_time)
+        latest_official_event_date = latest_event.event_time.date()
+        official_event_age_days = (run_date - latest_official_event_date).days
+
+    # Build caveats list
+    caveats: list[str] = []
+
+    # Caveat 1: Stale fundamentals (period_end > 100 days old)
+    if fundamentals_age_days is not None and fundamentals_age_days > 100:
+        period_end_iso = fundamentals_period_end.isoformat()
+        caveats.append(
+            f"fundamentals reflect period ending {period_end_iso}, ~{fundamentals_age_days} days old; "
+            f"current quarter likely unreported"
+        )
+    # Caveat 2: Moderately stale fundamentals (60-100 days old)
+    elif fundamentals_age_days is not None and 60 <= fundamentals_age_days <= 100:
+        period_end_iso = fundamentals_period_end.isoformat()
+        caveats.append(
+            f"fundamentals reflect period ending {period_end_iso}, ~{fundamentals_age_days} days old; "
+            f"verify whether next quarter has been reported"
+        )
+    # Caveat 3: No fundamentals snapshot
+    if fundamentals is None:
+        caveats.append("no fundamentals snapshot available for this ticker")
+
+    # Caveat 4: Stale official events (> 30 days old)
+    if official_event_age_days is not None and official_event_age_days > 30:
+        date_iso = latest_official_event_date.isoformat()
+        caveats.append(
+            f"latest official filing was {official_event_age_days} days ago on {date_iso}; "
+            f"no recent disclosures"
+        )
+    # Caveat 5: No official events
+    if not official_events:
+        caveats.append("no official events available for this ticker")
+
+    return {
+        "run_date": run_date.isoformat(),
+        "fundamentals_period_end": fundamentals_period_end.isoformat() if fundamentals_period_end is not None else None,
+        "fundamentals_filed_on": fundamentals_filed_on.isoformat() if fundamentals_filed_on is not None else None,
+        "fundamentals_age_days": fundamentals_age_days,
+        "fundamentals_filed_age_days": fundamentals_filed_age_days,
+        "latest_official_event_date": latest_official_event_date.isoformat() if latest_official_event_date is not None else None,
+        "official_event_age_days": official_event_age_days,
+        "caveats": caveats,
+    }
 
 
 def _serialize_option_snapshot(snapshot: OptionSnapshot | None) -> dict[str, Any] | None:

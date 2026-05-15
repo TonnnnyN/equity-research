@@ -581,3 +581,195 @@ class ReviewPacketTests(TestCase):
         self.assertIn("MSFT260417C00400000", report)
         self.assertIn("0.5455", report)
 
+    def test_freshness_block_present_with_fresh_data(self) -> None:
+        security = Security(ticker="MSFT", name="Microsoft", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 3, 26)
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[
+                OfficialEvent(
+                    ticker="MSFT",
+                    event_time=datetime(2026, 3, 20),
+                    form_type="10-Q",
+                    title="MSFT filed quarterly results",
+                    url="https://example.com",
+                    source="sec",
+                )
+            ],
+            fundamentals=FundamentalSnapshot(
+                ticker="MSFT",
+                cik="1",
+                period_end=date(2026, 3, 10),  # 16 days before run_date
+                filed_on=date(2026, 3, 15),
+                revenue_latest=120,
+                revenue_previous=100,
+                operating_cashflow_latest=50,
+                operating_cashflow_previous=40,
+                capex_latest=10,
+                cash_latest=90,
+                debt_latest=40,
+                source="sec_companyfacts",
+            ),
+            macro=[],
+            source_statuses=[],
+        )
+        scorecard = ScoreCard(
+            run_date=run_date,
+            security=security,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            triggered=True,
+            trigger=TriggerResult(triggered=True, reasons=[]),
+            fundamentals=BucketScore("fundamentals", 10, 30),
+            sentiment=BucketScore("sentiment", 5, 15),
+            chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+            price_flow=BucketScore("price_flow", 3, 15),
+            risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+            total_score=70,
+            state=ActionState.WATCH,
+        )
+
+        packet = build_review_packet(datetime(2026, 3, 26, 14, 0, 0), context, scorecard)
+
+        self.assertIn("freshness", packet)
+        freshness = packet["freshness"]
+        self.assertEqual(freshness["run_date"], "2026-03-26")
+        self.assertEqual(freshness["fundamentals_period_end"], "2026-03-10")
+        self.assertEqual(freshness["fundamentals_age_days"], 16)
+        self.assertEqual(freshness["latest_official_event_date"], "2026-03-20")
+        self.assertEqual(freshness["official_event_age_days"], 6)
+        self.assertEqual(freshness["caveats"], [])
+
+    def test_freshness_block_warns_on_stale_fundamentals(self) -> None:
+        security = Security(ticker="MSFT", name="Microsoft", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 3, 26)
+        stale_period_end = date(2025, 12, 15)  # 101 days before run_date
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=FundamentalSnapshot(
+                ticker="MSFT",
+                cik="1",
+                period_end=stale_period_end,
+                filed_on=date(2025, 12, 31),
+                revenue_latest=120,
+                revenue_previous=100,
+                operating_cashflow_latest=50,
+                operating_cashflow_previous=40,
+                capex_latest=10,
+                cash_latest=90,
+                debt_latest=40,
+                source="sec_companyfacts",
+            ),
+            macro=[],
+            source_statuses=[],
+        )
+        scorecard = ScoreCard(
+            run_date=run_date,
+            security=security,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            triggered=True,
+            trigger=TriggerResult(triggered=True, reasons=[]),
+            fundamentals=BucketScore("fundamentals", 10, 30),
+            sentiment=BucketScore("sentiment", 5, 15),
+            chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+            price_flow=BucketScore("price_flow", 3, 15),
+            risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+            total_score=70,
+            state=ActionState.WATCH,
+        )
+
+        packet = build_review_packet(datetime(2026, 3, 26, 14, 0, 0), context, scorecard)
+
+        freshness = packet["freshness"]
+        self.assertEqual(freshness["fundamentals_age_days"], 101)
+        self.assertTrue(any("current quarter likely unreported" in caveat for caveat in freshness["caveats"]))
+
+    def test_freshness_block_handles_missing_fundamentals(self) -> None:
+        security = Security(ticker="MSFT", name="Microsoft", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 3, 26)
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+        )
+        scorecard = ScoreCard(
+            run_date=run_date,
+            security=security,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            triggered=True,
+            trigger=TriggerResult(triggered=True, reasons=[]),
+            fundamentals=BucketScore("fundamentals", 10, 30),
+            sentiment=BucketScore("sentiment", 5, 15),
+            chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+            price_flow=BucketScore("price_flow", 3, 15),
+            risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+            total_score=70,
+            state=ActionState.WATCH,
+        )
+
+        packet = build_review_packet(datetime(2026, 3, 26, 14, 0, 0), context, scorecard)
+
+        freshness = packet["freshness"]
+        self.assertIsNone(freshness["fundamentals_period_end"])
+        self.assertIsNone(freshness["fundamentals_age_days"])
+        self.assertTrue(any("no fundamentals snapshot available" in caveat for caveat in freshness["caveats"]))
+
+    def test_freshness_block_handles_no_events(self) -> None:
+        security = Security(ticker="MSFT", name="Microsoft", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 3, 26)
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=FundamentalSnapshot(
+                ticker="MSFT",
+                cik="1",
+                period_end=date(2026, 3, 10),
+                filed_on=date(2026, 3, 15),
+                revenue_latest=120,
+                revenue_previous=100,
+                operating_cashflow_latest=50,
+                operating_cashflow_previous=40,
+                capex_latest=10,
+                cash_latest=90,
+                debt_latest=40,
+                source="sec_companyfacts",
+            ),
+            macro=[],
+            source_statuses=[],
+        )
+        scorecard = ScoreCard(
+            run_date=run_date,
+            security=security,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            triggered=True,
+            trigger=TriggerResult(triggered=True, reasons=[]),
+            fundamentals=BucketScore("fundamentals", 10, 30),
+            sentiment=BucketScore("sentiment", 5, 15),
+            chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+            price_flow=BucketScore("price_flow", 3, 15),
+            risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+            total_score=70,
+            state=ActionState.WATCH,
+        )
+
+        packet = build_review_packet(datetime(2026, 3, 26, 14, 0, 0), context, scorecard)
+
+        freshness = packet["freshness"]
+        self.assertIsNone(freshness["latest_official_event_date"])
+        self.assertIsNone(freshness["official_event_age_days"])
+        self.assertTrue(any("no official events available" in caveat for caveat in freshness["caveats"]))
+
