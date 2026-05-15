@@ -1,8 +1,8 @@
 # 市场情绪感知项目 —— 深度评审报告
 
 > 初版生成日期：2026-05-12
-> 最新更新：2026-05-15（0.16 新增：Tier 1+2+3 P0/P1/P2/P3 集中收尾，118/118 测试）
-> 当前代码版本：`c387fa3`
+> 最新更新：2026-05-15（0.17 新增：Tiger Trade 价格 lane + Yahoo Finance 备用 + 5 bug 闭环，133/133 测试）
+> 当前代码版本：`c387fa3` + 本地未 commit 改动
 
 ---
 
@@ -296,6 +296,116 @@ a36c2e1  Tier 1 robustness: truncation, preflight visibility, data gating
 2. **观察一周**:用现在的 watchlist 跑日常 run-daily,看 `social_rebound != 0` 在多少票上稳定出现,验证 0.15.4 调参是否合适
 3. **填 `filing_summary_cache.sentiment` 字段**:目前是 placeholder `"unknown"`,可以加 DeepSeek 二次调用做 filing 摘要(P0 step 8 当时留下的 Phase 2)
 4. **SEC/FRED/EIA 本地日级缓存**:若 quota 问题真冒出来再做,模板可复用 P0 step 8 的写法
+
+---
+
+### 0.17 Tiger Trade 价格 lane 接入 + Yahoo Finance 备用源(2026-05-15)
+
+#### 0.17.1 本轮工作概述
+
+用户拿到 Tiger 开发者凭证,触发了 0.16.6 表里挂着的 **P0 step 9'**。orchestrator(我)派工 4 轮 subagent(2 Haiku impl + 1 Sonnet impl + 多次 Haiku 实测复核),最终实现:
+- 价格 fallback 链:**Tiger → Yahoo Chart → Alpha Vantage → Stooq → SQLite 缓存**
+- 5 个 bug 全部闭环
+- 33 watchlist ticker(含 4 个港股)100% 覆盖,Tiger 拿美股、Yahoo 拿港股
+- pytest **118 → 133**(原有 + 11 Tiger 单测 + 5 Yahoo 单测,以及随重构调整的若干现有 case)
+
+#### 0.17.2 新增 / 改动的代码
+
+**新增**:
+- `sharing-resources/src/market_sentiment/sources/tiger.py`(~250 行):`TigerClient.fetch_daily_prices`,SDK 用 `TigerOpenClientConfig(props_path=...)` 读 `tiger_api/` 目录下的 `tiger_openapi_config.properties` + `tiger_openapi_token.properties`,内部用 `QuoteClient(config, is_grab_permission=False)` 跳过实时行情权限抓取(关键修复,见 0.17.3)
+- `sharing-resources/src/market_sentiment/sources/yahoo_finance.py`(~110 行):`YahooFinanceClient.fetch_daily_prices`,免 key,走 `query1.finance.yahoo.com/v8/finance/chart/{ticker}`,原生支持美股 + 港股 `.HK`(无需 symbol 转换)
+- `sharing-resources/tests/test_tiger.py`(11 case)+ `tests/test_yahoo_finance.py`(5 case)
+
+**改动**:
+- `pipeline.py:192-244` 把 `_fetch_prices_with_fallback` 改成 5 级链(Tiger → Yahoo → AV → Stooq → cache)
+- `runtime_preflight.py`:加 `TIGER_CONFIG_PATH` blocking 检查,支持目录或文件路径
+- `secrets/market_sentiment.secrets.example.sh`:删 4 个旧 env(`TIGER_ID` / `TIGER_PRIVATE_KEY_PATH` / `TIGER_ACCOUNT` / `TIGER_SERVER`),改成单一 `TIGER_CONFIG_PATH="sharing-resources/secrets/tiger_api/"`
+- `.gitignore`:点名 `sharing-resources/secrets/tiger_api/`(catch-all 本来就覆盖,显式列出图清晰)
+- `pyproject.toml`:加 `tigeropen>=3.0.0` 依赖
+- `tests/test_pipeline.py` + `test_sources.py` + `test_runtime_fixes.py`:同步修订 fallback 链长度断言、preflight 字段集
+
+**凭证布局(用户负责)**:
+```
+sharing-resources/secrets/tiger_api/
+├── tiger_openapi_config.properties   # tiger_id / account / license / env / private_key
+└── tiger_openapi_token.properties    # user_token(从 Tiger 开发者后台生成)
+```
+
+#### 0.17.3 5 个 bug 闭环过程(派工流水线复盘)
+
+| # | 阶段 | bug | 真因 | 修法 |
+|---|---|---|---|---|
+| 1 | impl-A(haiku) | `tiger.py` import 路径错 | 跟着 orchestrator 凭研究笔记伪造的文档抄入 `from tigeropen.common.consts import TigerOpenClientConfig` | 改为 `from tigeropen.tiger_open_config import TigerOpenClientConfig`(orchestrator `python -c` 验过) |
+| 2 | impl-A(haiku) | `TigerOpenClientConfig(props_file_path=...)` 参数名错 | 同上来源 | 改 `props_path=...`(`inspect.signature` 验过) |
+| 3 | impl-A(haiku) | tigeropen SDK 调 `openapi.tigerfintech.com` 抛 `CERTIFICATE_VERIFY_FAILED` | Mac 上 Python 3.12 framework 安装包没默认 cafile;SDK 用 requests/urllib3 自己的 CA 路径,**不走** http.py 的 certifi 修复 | tiger.py 模块顶层 `os.environ.setdefault("SSL_CERT_FILE", certifi.where())` + `REQUESTS_CA_BUNDLE` 同样,在 SDK lazy import 之前注入 |
+| 4 | impl-Sonnet | `QuoteClient(config)` 启动时调 `grab_quote_permission()` 抛 `code=2400 user token cannot be empty` | SDK 默认 `is_grab_permission=True`,要求账户有实时行情订阅;但拉历史日线(`get_bars`)其实不需要这个权限 | `QuoteClient(config, is_grab_permission=False)` 跳过启动权限抓取 |
+| 5 | 配置层(用户做) | 所有 `get_bars` 调用仍报 `user_token cannot be empty` | SDK 内部所有请求都会附带 `token` 字段,token 来自 `tiger_openapi_token.properties` 或环境变量;orchestrator 通过 `inspect.getsource` 查清 SDK 加载 token 的 3 个来源,告诉用户去 Tiger 开发者后台生成 user_token | 用户在 `tiger_api/` 目录加了 `tiger_openapi_token.properties`,SDK 自动读 |
+
+每个 bug 都经过 orchestrator 用 `python -c` / `inspect.getsource` / 真凭证 smoke test **独立复核**,没有照单全收 subagent 的诊断。bug 3 那个 SSL 问题甚至 0.7.2 在 Reddit/SEC 上修过一次,这是同种问题在 tigeropen 上的重演——subagent 没有联想能力,需要 orchestrator 把"Mac 3.12 framework 安装包默认无 cafile"这条共性认知带进 spec 里。
+
+#### 0.17.4 实测结果(8 ticker)
+
+最终 verification(2026-05-15,用真凭证):
+
+| 类 | Ticker | Tiger | Yahoo | pipeline 最终来源 |
+|---|---|---|---|---|
+| 美股 | MSFT | ✅ 103 bar @ 409.43 | ✅ 123 bar | tiger(103 bar) |
+| 美股 | CRM | ✅ 103 bar @ 167.58 | ✅ 123 bar | tiger |
+| 美股 | NVDA | ✅ | ✅ | tiger |
+| 美股 | AAPL | ✅ | ✅ | tiger |
+| 港股 | 9660.HK | ❌ empty | ✅ 120 bar @ 6.26 | yahoo_chart(120 bar) |
+| 港股 | 3033.HK | ❌ empty | ✅ 120 bar @ 4.83 | yahoo_chart |
+| 港股 | 9880.HK | ❌ empty | ✅ | yahoo_chart |
+| 港股 | 2252.HK | ❌ empty | ✅ | yahoo_chart |
+
+**港股 Tiger 失败原因**:用户的 Tiger 账户没买港股 Level 1 实时行情订阅(license=TBHK 但订阅没开)。Tiger 服务端不抛错,**返回空 DataFrame**,导致 success=False → fallback 链自动落到 Yahoo。**这是设计上预期的兜底行为,不是 bug**。
+
+#### 0.17.5 价格数据本地持久化(回应用户提问)
+
+历史 K 线**自动持久化到 SQLite**:
+- 表:`daily_prices(ticker, trading_date, open, high, low, close, volume, source, source_url, ingested_at)`,主键 `(ticker, trading_date)`
+- 写入点:`pipeline.py:79` 每次成功 fetch 后 `storage.upsert_prices(security_prices)`(INSERT OR REPLACE)
+- 保留期:**365 天**(`watchlist.toml: daily_price_days = 365`)
+- 退出兜底:`pipeline._fetch_prices_with_fallback` 在 Tiger+Yahoo+AV+Stooq 全挂时,从本地缓存读最近 60 天的 bar(`storage.read_cached_prices(ticker, days_back=60)`),`partial=True` 标记
+- 数据多源混存:同一 ticker 同一天会被新来源 REPLACE 旧来源(Tiger 在前所以最新一次写入通常是 Tiger / Yahoo 数据,`source` 字段记录哪条 lane 写的)
+
+**之前提到的"30 天"是 Tiger 服务端 quota 复用窗口**(同一 symbol 30 天内不重复扣 quota),那是 Tiger 内部机制,**与本地存储无关**——本地是 365 天。
+
+#### 0.17.6 调研结论:支撑价 / 平均价不接(2026-05-15 用户决策)
+
+orchestrator 用真凭证探了 Tiger SDK 所有相关接口:
+
+| 想要的 | Tiger 接口 | 结论 |
+|---|---|---|
+| VWAP / 日均价 | `get_bars` 已返 `amount`,`VWAP = amount / volume` 直接算 | 不必新接接口 |
+| 盘中分时均价 | `get_timeline` permission denied(需实时订阅) | — |
+| 实时报价(briefs) | `get_stock_briefs` permission denied | — |
+| 延迟 15 分钟报价 | `get_stock_delay_briefs` 可用,字段 `symbol/pre_close/halted/time/open/high/low/close/volume`(无 VWAP) | 用户决定不接 |
+| 支撑/压力价 | Tiger **没有这个 API**,是技术分析衍生量(MA / Pivot / 布林),都能从已有 K 线本地推 | 用户决定不加 |
+
+最终决策:都不加。当前价格 lane 已经能满足 trigger + scoring 需求。
+
+#### 0.17.7 派工模式总结(本轮 vs 0.16 大批量)
+
+本轮共派 9 个 subagent:
+- Haiku impl × 2(初版 tiger.py + 重构 properties 路径 + Yahoo Finance)
+- Sonnet impl × 2(`is_grab_permission` 一行修 + tiger_api/ 目录迁移)
+- Haiku verify × 4(每次代码改动后跑 pytest + 真凭证拉数据)
+- 中间 orchestrator 自己 `python -c` 验过 3 次,直接 inspect SDK 源码
+
+**关键教训**:
+1. SDK 类的接入,**orchestrator 在写 spec 时不能凭研究笔记假设 API 名字**——必须先 `python -c` 验过真实 import 路径 + `inspect.signature` 看签名,再写 spec
+2. **Haiku 在做"诊断"时容易过度发挥**——0.17.3 表 # 1+#2 那两条 bug 测试 subagent 居然能识别出来(虽然测试时并没真跑到那行),但 impl subagent 跟着 orchestrator 错指令照抄进去
+3. **Sonnet impl 适合做"一行精确改动"**(`is_grab_permission=False`)和"路径迁移"类任务,不需要发挥
+4. **真凭证 smoke test 不可省**——所有"测试用 mock 全过"的 case,真打服务端都暴露了新的 bug 层(SSL → 启动权限 → token)
+
+#### 0.17.8 仍未处理的(优先级低)
+
+| 项 | 现状 | 备注 |
+|---|---|---|
+| 港股 Tiger 行情订阅 | 用户账户 license=TBHK 但 Level 1 没买 | 不阻塞——Yahoo 已 100% 兜底港股;真要切官方源时去 Tiger 后台买订阅即可,代码一行不改 |
+| Tiger 专用 SQLite 缓存(原 step 9 衍生想法) | 不做 | `daily_prices` 通用表已经服务所有源,Tiger SDK 自身又有 30 天 quota 复用,加专用缓存收益接近 0 |
+| `tigeropen` 写入 pyproject 的版本下限 | `>=3.0.0`,但实测装的是 3.5.8 | 这条不动;实际行为没问题,等真需要锁版本再调 |
 
 ---
 

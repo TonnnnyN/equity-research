@@ -10,6 +10,7 @@ secrets/*
 sharing-resources/secrets/*
 !sharing-resources/secrets/README.md
 !sharing-resources/secrets/*.example.sh
+sharing-resources/secrets/tiger_api/
 
 # Runtime and generated data
 data/

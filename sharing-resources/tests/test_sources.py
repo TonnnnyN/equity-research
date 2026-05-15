@@ -963,6 +963,12 @@ eia_natural_gas_route = "/v2/natural-gas/pri/sum/data/"
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.config.social.enabled = False
 
+            def tiger_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+                return SourcePayload(data=[], status=SourceStatus(source="tiger", success=False, partial=True, message="no data"))
+
+            def yahoo_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+                return SourcePayload(data=[], status=SourceStatus(source="yahoo_chart", success=False, partial=True, message="no data"))
+
             def primary_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(data=[], status=SourceStatus(source="alpha_vantage", success=False, partial=True, message="missing key"))
 
@@ -983,13 +989,19 @@ eia_natural_gas_route = "/v2/natural-gas/pri/sum/data/"
                     status=SourceStatus(source="stooq", success=True, message="ok"),
                 )
 
+            pipeline.tiger.fetch_daily_prices = tiger_failure  # type: ignore[method-assign]
+            pipeline.yahoo.fetch_daily_prices = yahoo_failure  # type: ignore[method-assign]
             pipeline.alpha_vantage.fetch_daily_prices = primary_failure  # type: ignore[method-assign]
             pipeline.stooq.fetch_daily_prices = stooq_success  # type: ignore[method-assign]
 
             payload, statuses = pipeline._fetch_prices_with_fallback("NVDA", date(2026, 3, 26))
 
             self.assertEqual(payload.data[0].source, "stooq")
-            self.assertEqual(len(statuses), 2)
+            self.assertEqual(len(statuses), 4)
+            self.assertEqual(statuses[0].source, "tiger")
+            self.assertEqual(statuses[1].source, "yahoo_chart")
+            self.assertEqual(statuses[2].source, "alpha_vantage")
+            self.assertEqual(statuses[3].source, "stooq")
 
     def test_companyfacts_pair_uses_comparable_reporting_period(self) -> None:
         us_gaap = {

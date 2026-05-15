@@ -72,6 +72,77 @@ def _build_api_key_checks(config: ProjectConfig) -> list[PreflightCheck]:
                 )
             )
 
+    # Tiger config path check (blocking)
+    tiger_config_path = os.environ.get("TIGER_CONFIG_PATH")
+    if not tiger_config_path:
+        checks.append(
+            PreflightCheck(
+                "Tiger config: TIGER_CONFIG_PATH",
+                False,
+                "TIGER_CONFIG_PATH is not set",
+                blocking=True,
+            )
+        )
+    else:
+        config_path = Path(tiger_config_path).expanduser().resolve()
+        if not config_path.exists():
+            checks.append(
+                PreflightCheck(
+                    "Tiger config: TIGER_CONFIG_PATH",
+                    False,
+                    f"TIGER_CONFIG_PATH path not found: {tiger_config_path}",
+                    blocking=True,
+                )
+            )
+        elif config_path.is_file():
+            if config_path.name != "tiger_openapi_config.properties":
+                checks.append(
+                    PreflightCheck(
+                        "Tiger config: TIGER_CONFIG_PATH",
+                        False,
+                        f"TIGER_CONFIG_PATH must point to tiger_openapi_config.properties file, got: {config_path.name}",
+                        blocking=True,
+                    )
+                )
+            else:
+                checks.append(
+                    PreflightCheck(
+                        "Tiger config: TIGER_CONFIG_PATH",
+                        True,
+                        f"file exists at {tiger_config_path}",
+                        blocking=True,
+                    )
+                )
+        elif config_path.is_dir():
+            props_file = config_path / "tiger_openapi_config.properties"
+            if not props_file.exists():
+                checks.append(
+                    PreflightCheck(
+                        "Tiger config: TIGER_CONFIG_PATH",
+                        False,
+                        f"tiger_openapi_config.properties not found under {tiger_config_path}",
+                        blocking=True,
+                    )
+                )
+            else:
+                checks.append(
+                    PreflightCheck(
+                        "Tiger config: TIGER_CONFIG_PATH",
+                        True,
+                        f"directory with properties file ready at {tiger_config_path}",
+                        blocking=True,
+                    )
+                )
+        else:
+            checks.append(
+                PreflightCheck(
+                    "Tiger config: TIGER_CONFIG_PATH",
+                    False,
+                    f"TIGER_CONFIG_PATH must be a file or directory, got: {tiger_config_path}",
+                    blocking=True,
+                )
+            )
+
     if config.social.reddit.enabled:
         for reddit_key in ["REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET"]:
             key_value = os.environ.get(reddit_key)

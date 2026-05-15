@@ -509,6 +509,20 @@ class PipelineTests(TestCase):
                 )
             storage.upsert_prices(bars)
 
+            # Mock Tiger to return empty payload (success=False)
+            def tiger_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+                return SourcePayload(
+                    data=[],
+                    status=SourceStatus(source="tiger", success=False, partial=True, message="no data"),
+                )
+
+            # Mock Yahoo to return empty payload (success=False)
+            def yahoo_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+                return SourcePayload(
+                    data=[],
+                    status=SourceStatus(source="yahoo_chart", success=False, partial=True, message="no data"),
+                )
+
             # Mock Alpha Vantage to return empty payload (success=False)
             def av_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(
@@ -523,6 +537,8 @@ class PipelineTests(TestCase):
                     status=SourceStatus(source="stooq", success=False, partial=True, message="no data"),
                 )
 
+            pipeline.tiger.fetch_daily_prices = tiger_failure  # type: ignore[method-assign]
+            pipeline.yahoo.fetch_daily_prices = yahoo_failure  # type: ignore[method-assign]
             pipeline.alpha_vantage.fetch_daily_prices = av_failure  # type: ignore[method-assign]
             pipeline.stooq.fetch_daily_prices = stooq_failure  # type: ignore[method-assign]
 
@@ -536,11 +552,15 @@ class PipelineTests(TestCase):
             self.assertTrue(payload.status.partial)
             self.assertIn("using cached prices through", payload.status.message)
 
-            # Assert: statuses list contains all three sources (AV, Stooq, cache)
-            self.assertEqual(len(statuses), 3)
-            self.assertEqual(statuses[-1].source, "daily_prices_cache")
-            self.assertTrue(statuses[-1].partial)
-            self.assertIn("using cached prices through", statuses[-1].message)
+            # Assert: statuses list contains all five sources (Tiger, Yahoo, AV, Stooq, cache)
+            self.assertEqual(len(statuses), 5)
+            self.assertEqual(statuses[0].source, "tiger")
+            self.assertEqual(statuses[1].source, "yahoo_chart")
+            self.assertEqual(statuses[2].source, "alpha_vantage")
+            self.assertEqual(statuses[3].source, "stooq")
+            self.assertEqual(statuses[4].source, "daily_prices_cache")
+            self.assertTrue(statuses[4].partial)
+            self.assertIn("Tiger+Yahoo+AV+Stooq all unavailable", statuses[4].message)
 
     def test_pipeline_graceful_degradation_when_all_sources_fail(self) -> None:
         """

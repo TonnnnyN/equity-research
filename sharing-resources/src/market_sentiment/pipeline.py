@@ -29,6 +29,8 @@ from market_sentiment.sources.options_alpha_vantage import AlphaVantageOptionsCl
 from market_sentiment.sources.fred import FredClient
 from market_sentiment.sources.sec import SecClient
 from market_sentiment.sources.stooq import StooqClient
+from market_sentiment.sources.tiger import TigerClient
+from market_sentiment.sources.yahoo_finance import YahooFinanceClient
 from market_sentiment.storage import Storage
 from market_sentiment.triggers import compute_trigger
 
@@ -40,6 +42,8 @@ class DailyPipeline:
         user_agent = os.environ.get("SEC_USER_AGENT", self.config.default_user_agent)
         self.http = HttpClient(user_agent)
         self.sec = SecClient(self.http, self.storage)
+        self.tiger = TigerClient(self.http, self.storage)
+        self.yahoo = YahooFinanceClient(self.http, self.storage)
         self.alpha_vantage = AlphaVantageClient(self.http, self.storage)
         self.stooq = StooqClient(self.http, self.storage)
         self.fred = FredClient(self.http, self.storage)
@@ -189,31 +193,53 @@ class DailyPipeline:
 
     def _fetch_prices_with_fallback(self, ticker: str, run_date: date):
         try:
-            primary = self.alpha_vantage.fetch_daily_prices(ticker, run_date)
+            primary = self.tiger.fetch_daily_prices(ticker, run_date)
         except Exception as exc:
             primary = SourcePayload(
                 data=[],
-                status=self._failure_status("alpha_vantage", f"Failed to fetch prices for {ticker}: {exc}"),
+                status=self._failure_status("tiger", f"Failed to fetch prices for {ticker}: {exc}"),
             )
         statuses = [primary.status]
         if primary.status.success and primary.data:
             return primary, statuses
 
         try:
-            fallback = self.stooq.fetch_daily_prices(ticker, run_date)
+            fallback_yahoo = self.yahoo.fetch_daily_prices(ticker, run_date)
+        except Exception as exc:
+            fallback_yahoo = SourcePayload(
+                data=[],
+                status=self._failure_status("yahoo_chart", f"Failed to fetch prices for {ticker}: {exc}"),
+            )
+        statuses.append(fallback_yahoo.status)
+        if fallback_yahoo.status.success and fallback_yahoo.data:
+            return fallback_yahoo, statuses
+
+        try:
+            fallback_av = self.alpha_vantage.fetch_daily_prices(ticker, run_date)
+        except Exception as exc:
+            fallback_av = SourcePayload(
+                data=[],
+                status=self._failure_status("alpha_vantage", f"Failed to fetch prices for {ticker}: {exc}"),
+            )
+        statuses.append(fallback_av.status)
+        if fallback_av.status.success and fallback_av.data:
+            return fallback_av, statuses
+
+        try:
+            fallback_stooq = self.stooq.fetch_daily_prices(ticker, run_date)
         except Exception as exc:
             try:
-                fallback = self.stooq.fetch_daily_prices(ticker, run_date)
+                fallback_stooq = self.stooq.fetch_daily_prices(ticker, run_date)
             except Exception as retry_exc:
-                fallback = SourcePayload(
+                fallback_stooq = SourcePayload(
                     data=[],
                     status=self._failure_status("stooq", f"Failed to fetch fallback prices for {ticker}: {retry_exc}"),
                 )
-        statuses.append(fallback.status)
-        if fallback.status.success and fallback.data:
-            return fallback, statuses
+        statuses.append(fallback_stooq.status)
+        if fallback_stooq.status.success and fallback_stooq.data:
+            return fallback_stooq, statuses
 
-        # When both primary (AV) and fallback (Stooq) have no data:
+        # When Tiger, Yahoo, AV, and Stooq all have no data:
         cached = self.storage.read_cached_prices(ticker, days_back=60)
         if cached:
             latest = max(bar.trading_date for bar in cached)
@@ -221,7 +247,7 @@ class DailyPipeline:
                 source="daily_prices_cache",
                 success=True,
                 partial=True,
-                message=f"using cached prices through {latest.isoformat()}; AV+Stooq both unavailable",
+                message=f"using cached prices through {latest.isoformat()}; Tiger+Yahoo+AV+Stooq all unavailable",
                 source_url=None,
                 ingested_at=datetime.now(timezone.utc),
             )

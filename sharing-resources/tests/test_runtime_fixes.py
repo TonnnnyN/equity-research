@@ -80,7 +80,7 @@ class RuntimeFixTests(TestCase):
                     payload = security_prices if ticker == "NVDA" else benchmark_prices
                     return SourcePayload(
                         data=payload,
-                        status=SourceStatus(source=f"alpha_vantage:{ticker}", success=True, message="ok"),
+                        status=SourceStatus(source=f"tiger:{ticker}", success=True, message="ok"),
                     )
 
                 def unexpected_fallback(*_args, **_kwargs) -> SourcePayload[list[PriceBar]]:
@@ -120,7 +120,9 @@ class RuntimeFixTests(TestCase):
                         status=SourceStatus(source=f"facts:{ticker}", success=True, message="ok"),
                     )
 
-                pipeline.alpha_vantage.fetch_daily_prices = fetch_prices  # type: ignore[method-assign]
+                pipeline.tiger.fetch_daily_prices = fetch_prices  # type: ignore[method-assign]
+                pipeline.yahoo.fetch_daily_prices = unexpected_fallback  # type: ignore[method-assign]
+                pipeline.alpha_vantage.fetch_daily_prices = unexpected_fallback  # type: ignore[method-assign]
                 pipeline.stooq.fetch_daily_prices = unexpected_fallback  # type: ignore[method-assign]
                 pipeline.sec.fetch_recent_events = fetch_events  # type: ignore[method-assign]
                 pipeline.sec.fetch_company_facts = fetch_companyfacts  # type: ignore[method-assign]
@@ -169,6 +171,14 @@ class RuntimeFixTests(TestCase):
                         status=SourceStatus(source=f"stooq:{ticker}", success=True, message="ok"),
                     )
 
+                def always_fail(*_args, **_kwargs) -> SourcePayload[list[PriceBar]]:
+                    return SourcePayload(
+                        data=[],
+                        status=SourceStatus(source="tiger", success=False, partial=True, message="unavailable"),
+                    )
+
+                pipeline.tiger.fetch_daily_prices = always_fail  # type: ignore[method-assign]
+                pipeline.yahoo.fetch_daily_prices = always_fail  # type: ignore[method-assign]
                 pipeline.alpha_vantage.fetch_daily_prices = fetch_prices  # type: ignore[method-assign]
                 pipeline.stooq.fetch_daily_prices = fetch_fallback  # type: ignore[method-assign]
                 pipeline.sec.fetch_recent_events = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
@@ -198,6 +208,13 @@ class RuntimeFixTests(TestCase):
                 for key in ["FRED_API_KEY", "SEC_USER_AGENT", "DEEPSEEK_API_KEY"]:
                     saved_keys[key] = os.environ.pop(key, None)
                     os.environ[key] = "test_key_min_length_6"
+
+                # Create a temporary directory with tiger_openapi_config.properties
+                tiger_config_dir = Path(tmp) / "tiger_config"
+                tiger_config_dir.mkdir()
+                (tiger_config_dir / "tiger_openapi_config.properties").touch()
+                saved_keys["TIGER_CONFIG_PATH"] = os.environ.pop("TIGER_CONFIG_PATH", None)
+                os.environ["TIGER_CONFIG_PATH"] = str(tiger_config_dir)
 
                 pipeline.config.social.enabled = True
                 pipeline.config.social.x.enabled = True
@@ -237,6 +254,13 @@ class RuntimeFixTests(TestCase):
                     saved_keys[key] = os.environ.pop(key, None)
                     os.environ[key] = "test_key_min_length_6"
 
+                # Create a temporary directory with tiger_openapi_config.properties
+                tiger_config_dir = Path(tmp) / "tiger_config"
+                tiger_config_dir.mkdir()
+                (tiger_config_dir / "tiger_openapi_config.properties").touch()
+                saved_keys["TIGER_CONFIG_PATH"] = os.environ.pop("TIGER_CONFIG_PATH", None)
+                os.environ["TIGER_CONFIG_PATH"] = str(tiger_config_dir)
+
                 accounts_file = Path(tmp) / "x_accounts.txt"
                 accounts_file.write_text(
                     "user:pass:mail@example.com:mailpass:_:cookies.json\n",
@@ -269,6 +293,7 @@ class RuntimeFixTests(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pipeline, old_env = make_pipeline(tmp)
             original_key = os.environ.pop("ALPHAVANTAGE_API_KEY", None)
+            original_tiger_config = os.environ.pop("TIGER_CONFIG_PATH", None)
             try:
                 pipeline.config.social.enabled = False
                 pipeline.config.options.enabled = False
@@ -279,11 +304,14 @@ class RuntimeFixTests(TestCase):
                 check_names = {check.name for check in summary.checks}
                 self.assertIn("API key: ALPHAVANTAGE_API_KEY", check_names)
                 self.assertIn("API key: FRED_API_KEY", check_names)
+                self.assertIn("Tiger config: TIGER_CONFIG_PATH", check_names)
                 self.assertIn("missing — set in secrets file", rendered)
                 self.assertFalse(summary.ready)
             finally:
                 if original_key is not None:
                     os.environ["ALPHAVANTAGE_API_KEY"] = original_key
+                if original_tiger_config is not None:
+                    os.environ["TIGER_CONFIG_PATH"] = original_tiger_config
                 restore_env(old_env)
 
     def test_preflight_social_warn_when_all_providers_off(self) -> None:

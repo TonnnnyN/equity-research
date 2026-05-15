@@ -9,6 +9,11 @@ export EIA_API_KEY=""
 export SEC_USER_AGENT="market-sentiment/0.1 (local research use; contact@example.com)"
 export DEEPSEEK_API_KEY=""
 
+# Tiger 凭证(config + token)统一放在 tiger_api/ 子目录,SDK 会从该目录自动读取
+# tiger_openapi_config.properties — 含 tiger_id / account / license / env / private_key
+# tiger_openapi_token.properties  — 含 user_token(从 Tiger 开发者后台生成)
+export TIGER_CONFIG_PATH="sharing-resources/secrets/tiger_api/"
+
 export SOCIAL_ENABLED="false"
 export X_ENABLED="false"
 export X_PROVIDER="twscrape,twikit"
