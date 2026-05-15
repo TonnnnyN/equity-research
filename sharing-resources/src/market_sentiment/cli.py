@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "show-report":
-        print(pipeline.storage.load_report_markdown(run_date))
+        print(pipeline.storage.load_delivery_report_markdown(run_date))
         return 0
 
     if args.command == "preflight":

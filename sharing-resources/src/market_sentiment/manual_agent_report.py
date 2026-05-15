@@ -123,7 +123,7 @@ def render_manual_agent_report(
         f"- 生成时间：`{report.generated_at.isoformat()}`",
         f"- 触发标的数：`{report.triggered_count}`",
         f"- 数据覆盖完整的触发标的：`{sum(1 for card in report.scorecards if not card.partial_coverage)}` / `{len(report.scorecards)}`",
-        f"- 当前主报告仍是 `report.md / report.json`，本文件是更适合手动 Agent 复核的中文详细版。",
+        "- 本文件是本日运行的**唯一**人工/Agent 复核报告,所有触发股的完整证据均在下方;另在 `review_packets/<TICKER>.json` 提供机读结构。",
         "",
         "## 动作标签说明",
     ]

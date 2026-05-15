@@ -19,9 +19,6 @@ Expected shape:
 
 ```text
 data/reports/YYYY-MM-DD/
-  report.md
-  report.json
-  review_queue.md
   review_packets/
   manual_agent_report.zh.md
 ```
@@ -30,7 +27,7 @@ data/reports/YYYY-MM-DD/
 
 For quick inspection, start with `manual_agent_report.zh.md` when it exists. It is designed for human and Agent review in Chinese.
 
-For structured processing, use `report.json` and `review_packets/*.json`.
+For structured processing, use `review_packets/*.json`.
 
 For audit trail or source debugging, inspect `data/raw/<date>/` and storage records.
 

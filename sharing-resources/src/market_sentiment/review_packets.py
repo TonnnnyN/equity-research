@@ -93,44 +93,6 @@ def build_review_packet(
     )
 
 
-def render_review_queue(run_date: date, packets: dict[str, dict[str, Any]]) -> str:
-    lines = [
-        f"# Agent Review Queue - {run_date.isoformat()}",
-        "",
-        "这些 review packets 是给 Agent / LLM 最后判断用的结构化证据包。",
-        "建议流程：先看 `report.md` 的总览，再逐个打开 `review_packets/<ticker>.json` 做最终判断。",
-        "",
-        "建议输出格式：",
-        "- 最终动作：Reject / Watch / Starter / Add",
-        "- 结论摘要：一句话中文结论",
-        "- 核心理由：2-3 条",
-        "- 主要风险：2-3 条",
-        "- 后续观察点：2-3 条",
-        "",
-        "## Triggered Review Packets",
-    ]
-    if not packets:
-        lines.append("")
-        lines.append("- none")
-        return "\n".join(lines) + "\n"
-
-    for ticker, packet in sorted(packets.items()):
-        precheck = packet["rule_engine_precheck"]
-        lines.extend(
-            [
-                "",
-                f"### {ticker}",
-                f"- Rule Engine State: `{precheck['state']}`",
-                f"- Rule Engine Score: `{precheck['total_score']}`",
-                f"- Event Tag: `{precheck['event_tag']}`",
-                f"- Trigger Reasons: {', '.join(packet['trigger_summary']['reasons']) or 'n/a'}",
-                f"- Top Positives: {', '.join(packet.get('decision_summary', {}).get('top_positive_signals', [])) or 'n/a'}",
-                f"- Top Risks: {', '.join(packet.get('decision_summary', {}).get('top_risk_signals', [])) or 'n/a'}",
-                f"- Packet File: `review_packets/{ticker}.json`",
-            ]
-        )
-    return "\n".join(lines) + "\n"
-
 
 def _serialize_price(bar: PriceBar | None) -> dict[str, Any] | None:
     if bar is None:

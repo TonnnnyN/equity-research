@@ -17,7 +17,7 @@ from market_sentiment.models import (
     PriceBar,
     SourceStatus,
 )
-from market_sentiment.review_packets import build_review_packet, render_review_queue
+from market_sentiment.review_packets import build_review_packet
 from market_sentiment.runtime_preflight import PreflightSummary, build_preflight_summary
 from market_sentiment.scoring import build_scorecard, classify_event_tag
 from market_sentiment.social_service import SocialSignalService
@@ -140,9 +140,7 @@ class DailyPipeline:
             scorecards=sorted(triggered_scorecards, key=lambda item: item.total_score, reverse=True),
             source_statuses=dedupe_statuses(all_statuses + macro_statuses, decision_time),
         )
-        self.storage.save_report(report)
         self.storage.save_review_packets(run_date, review_packets)
-        self.storage.save_review_queue(run_date, render_review_queue(run_date, review_packets))
         self.storage.save_manual_agent_report(run_date, render_manual_agent_report(report, review_packets))
         return report
 

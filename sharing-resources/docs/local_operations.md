@@ -53,11 +53,8 @@ data/reports/<date>/
 
 Common outputs:
 
-- `report.md`
-- `report.json`
-- `review_queue.md`
-- `review_packets/*.json`
 - `manual_agent_report.zh.md`
+- `review_packets/<ticker>.json`
 
 ## Tests
 

@@ -6,68 +6,11 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.models import ActionState, BucketScore, DailyRunReport, EventTag, Layer, PriceBar, ScoreCard, Security, SourceStatus, TriggerResult
+from market_sentiment.models import PriceBar
 from market_sentiment.storage import Storage
 
 
-def make_scorecard(ticker: str, run_date: date) -> ScoreCard:
-    security = Security(ticker=ticker, name=ticker, layer=Layer.COMPUTE, benchmark="SOXX")
-    trigger = TriggerResult(
-        triggered=True,
-        reasons=["ten_day_drawdown"],
-        ten_day_drawdown=0.2,
-        twenty_day_drawdown=0.25,
-        relative_underperformance=0.1,
-        new_low=False,
-    )
-    return ScoreCard(
-        run_date=run_date,
-        security=security,
-        event_tag=EventTag.COMPANY_SPECIFIC,
-        triggered=True,
-        trigger=trigger,
-        fundamentals=BucketScore("fundamentals", 10, 30),
-        sentiment=BucketScore("sentiment", 6, 15),
-        chain_confirmation=BucketScore("chain_confirmation", 12, 20),
-        price_flow=BucketScore("price_flow", 4, 15),
-        risk_red_flags=BucketScore("risk_red_flags", 8, 20),
-        total_score=40,
-        state=ActionState.ADD,
-        partial_coverage=False,
-        evidence=["8-K"],
-    )
-
-
 class StorageTests(TestCase):
-    def test_save_report_clears_stale_scorecards_for_same_run_date(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            data_dir = Path(tmp)
-            storage = Storage(data_dir / "state.db", data_dir)
-            storage.init_db()
-            run_date = date(2026, 3, 26)
-
-            first_report = DailyRunReport(
-                run_date=run_date,
-                generated_at=datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc),
-                triggered_count=2,
-                scorecards=[make_scorecard("AAA", run_date), make_scorecard("BBB", run_date)],
-                source_statuses=[SourceStatus(source="sec", success=True, message="ok")],
-            )
-            second_report = DailyRunReport(
-                run_date=run_date,
-                generated_at=datetime(2026, 3, 26, 13, 0, tzinfo=timezone.utc),
-                triggered_count=1,
-                scorecards=[make_scorecard("CCC", run_date)],
-                source_statuses=[SourceStatus(source="sec", success=True, message="ok")],
-            )
-
-            storage.save_report(first_report)
-            storage.save_report(second_report)
-
-            with sqlite3.connect(storage.db_path) as conn:
-                self.assertEqual(conn.execute("SELECT COUNT(*) FROM scorecards WHERE run_date = ?", (run_date.isoformat(),)).fetchone()[0], 1)
-                self.assertEqual(conn.execute("SELECT ticker FROM scorecards WHERE run_date = ?", (run_date.isoformat(),)).fetchone()[0], "CCC")
-
     def test_save_review_packets_clears_stale_files_and_delivery_prefers_manual_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -82,15 +25,6 @@ class StorageTests(TestCase):
             self.assertFalse((packet_dir / "AAA.json").exists())
             self.assertTrue((packet_dir / "BBB.json").exists())
 
-            storage.save_report(
-                DailyRunReport(
-                    run_date=run_date,
-                    generated_at=datetime(2026, 3, 26, 12, 0, tzinfo=timezone.utc),
-                    triggered_count=0,
-                    scorecards=[],
-                    source_statuses=[],
-                )
-            )
             storage.save_manual_agent_report(run_date, "# detailed report")
 
             self.assertEqual(storage.load_delivery_report_markdown(run_date), "# detailed report")

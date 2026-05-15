@@ -129,8 +129,6 @@ class PipelineTests(TestCase):
 
             self.assertGreaterEqual(len(report.scorecards), 1)
             self.assertTrue(all(scorecard.triggered for scorecard in report.scorecards))
-            self.assertTrue((Path(tmp) / "reports" / "2026-03-26" / "report.md").exists())
-            self.assertTrue((Path(tmp) / "reports" / "2026-03-26" / "review_queue.md").exists())
             self.assertTrue((Path(tmp) / "reports" / "2026-03-26" / "review_packets").is_dir())
             self.assertTrue(any(scorecard.fundamentals.score >= 20 for scorecard in report.scorecards))
 
@@ -168,94 +166,6 @@ class PipelineTests(TestCase):
 
             self.assertTrue(filtered)
             self.assertLessEqual(max(bar.trading_date for bar in filtered), date(2026, 3, 26))
-
-    def test_save_report_replaces_same_day_scorecards(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            storage = Storage(Path(tmp) / "market_sentiment.db", Path(tmp))
-            storage.init_db()
-            pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
-            pipeline.storage = storage
-            pipeline.config.social.enabled = False
-
-            def fake_prices(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
-                drop = 1.5 if ticker in {"NVDA", "GOOG"} else 0.2
-                return SourcePayload(
-                    data=make_price_payload(ticker, 100.0, drop),
-                    status=SourceStatus(source=f"prices:{ticker}", success=True, message="ok"),
-                )
-
-            def fake_events(ticker: str, run_date: date) -> SourcePayload[list[OfficialEvent]]:
-                return SourcePayload(
-                    data=[
-                        OfficialEvent(
-                            ticker=ticker,
-                            event_time=datetime(2026, 3, 15),
-                            form_type="10-Q",
-                            title=f"{ticker} filed quarterly results",
-                            url="https://example.com",
-                            source="sec",
-                        )
-                    ],
-                    status=SourceStatus(source=f"sec:{ticker}", success=True, message="ok"),
-                )
-
-            def fake_companyfacts(ticker: str, run_date: date) -> SourcePayload[FundamentalSnapshot]:
-                return SourcePayload(
-                    data=FundamentalSnapshot(
-                        ticker=ticker,
-                        cik="0000000001",
-                        period_end=date(2025, 12, 31),
-                        filed_on=date(2026, 2, 1),
-                        revenue_latest=100.0,
-                        revenue_previous=90.0,
-                        operating_cashflow_latest=30.0,
-                        operating_cashflow_previous=20.0,
-                        capex_latest=10.0,
-                        cash_latest=50.0,
-                        debt_latest=40.0,
-                        source="sec_companyfacts",
-                    ),
-                    status=SourceStatus(source=f"facts:{ticker}", success=True, message="ok"),
-                )
-
-            pipeline.alpha_vantage.fetch_daily_prices = fake_prices  # type: ignore[method-assign]
-            pipeline.stooq.fetch_daily_prices = fake_prices  # type: ignore[method-assign]
-            pipeline.sec.fetch_recent_events = fake_events  # type: ignore[method-assign]
-            pipeline.sec.fetch_company_facts = fake_companyfacts  # type: ignore[method-assign]
-            pipeline.fred.fetch_series = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
-                data=[],
-                status=SourceStatus(source="fred", success=True, message="ok"),
-            )
-            pipeline.eia.fetch_series = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
-                data=[],
-                status=SourceStatus(source="eia", success=True, message="ok"),
-            )
-
-            run_day = date(2026, 3, 26)
-            report = pipeline.run(run_day)
-
-            with sqlite3.connect(storage.db_path) as conn:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO scorecards
-                    (run_date, ticker, layer, event_tag, triggered, total_score, state,
-                     veto_reason, partial_coverage, payload_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (run_day.isoformat(), "STALE", "compute", "company_specific", 1, 99, "Add", None, 0, "{}"),
-                )
-                conn.commit()
-
-            pipeline.run(run_day)
-
-            with sqlite3.connect(storage.db_path) as conn:
-                tickers = {
-                    row[0]
-                    for row in conn.execute("SELECT ticker FROM scorecards WHERE run_date = ?", (run_day.isoformat(),))
-                }
-
-            self.assertNotIn("STALE", tickers)
-            self.assertEqual(tickers, {scorecard.security.ticker for scorecard in report.scorecards})
 
     def test_successful_price_fallback_does_not_force_partial_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

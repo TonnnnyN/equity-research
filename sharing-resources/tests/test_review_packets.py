@@ -30,7 +30,7 @@ from market_sentiment.models import (
     TriggerResult,
 )
 from market_sentiment.manual_agent_report import render_manual_agent_report
-from market_sentiment.review_packets import build_review_packet, render_review_queue
+from market_sentiment.review_packets import build_review_packet
 from market_sentiment.storage import Storage
 
 
@@ -581,20 +581,3 @@ class ReviewPacketTests(TestCase):
         self.assertIn("MSFT260417C00400000", report)
         self.assertIn("0.5455", report)
 
-    def test_storage_writes_review_materials(self) -> None:
-        with TemporaryDirectory() as tmp:
-            storage = Storage(Path(tmp) / "state.db", Path(tmp))
-            storage.init_db()
-
-            packet_paths = storage.save_review_packets(
-                date(2026, 3, 26),
-                {"MSFT": {"security": {"ticker": "MSFT"}}, "ORCL": {"security": {"ticker": "ORCL"}}},
-            )
-            queue_path = storage.save_review_queue(
-                date(2026, 3, 26),
-                render_review_queue(date(2026, 3, 26), {"MSFT": {"rule_engine_precheck": {"state": "Watch", "total_score": 81, "event_tag": "company_specific"}, "trigger_summary": {"reasons": ["fresh_low"]}}}),
-            )
-
-            self.assertEqual(len(packet_paths), 2)
-            self.assertTrue(queue_path.exists())
-            self.assertIn("review_packets/MSFT.json", queue_path.read_text(encoding="utf-8"))

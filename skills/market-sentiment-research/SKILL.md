@@ -132,7 +132,9 @@ For target-pool price cache refresh:
 python3 skills/market-sentiment-research/scripts/update_price_cache.py
 ```
 
-Inspect daily outputs under `data/reports/<date>/`, especially `report.md`, `report.json`, `review_queue.md`, `review_packets/`, and `manual_agent_report.zh.md`.
+Inspect daily outputs under `data/reports/<date>/`:
+- `manual_agent_report.zh.md` — the single human-facing narrative covering all triggered tickers.
+- `review_packets/<TICKER>.json` — machine-readable structured evidence for your independent reasoning per ticker.
 
 ## Output Shape
 

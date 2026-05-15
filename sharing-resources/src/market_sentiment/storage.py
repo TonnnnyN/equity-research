@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 
-from market_sentiment.models import DailyRunReport, FilingSummaryCacheRow, FundamentalSnapshot, MacroObservation, OfficialEvent, PriceBar, SocialPost, SocialPostCacheRow, SocialSnapshot
+from market_sentiment.models import FilingSummaryCacheRow, FundamentalSnapshot, MacroObservation, OfficialEvent, PriceBar, SocialPost, SocialPostCacheRow, SocialSnapshot
 from market_sentiment.sources.social_base import SOCIAL_PROVIDER_NAMES
 
 
@@ -537,78 +537,6 @@ class Storage:
             conn.commit()
             return rowcount
 
-    def save_report(self, report: DailyRunReport) -> tuple[Path, Path]:
-        report_dir = self.data_dir / "reports" / report.run_date.isoformat()
-        report_dir.mkdir(parents=True, exist_ok=True)
-        json_path = report_dir / "report.json"
-        markdown_path = report_dir / "report.md"
-        json_path.write_text(
-            json.dumps(report.to_dict(), indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        markdown_path.write_text(render_markdown_report(report), encoding="utf-8")
-
-        with closing(sqlite3.connect(self.db_path)) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO runs (run_date, generated_at, triggered_count)
-                VALUES (?, ?, ?)
-                """,
-                (report.run_date.isoformat(), report.generated_at.isoformat(), report.triggered_count),
-            )
-            conn.execute("DELETE FROM source_payloads WHERE run_date = ?", (report.run_date.isoformat(),))
-            conn.execute("DELETE FROM scorecards WHERE run_date = ?", (report.run_date.isoformat(),))
-            conn.executemany(
-                """
-                INSERT INTO source_payloads
-                (run_date, source, payload_path, source_url, success, partial, message,
-                 ingested_at, event_start, event_end, decision_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        report.run_date.isoformat(),
-                        status.source,
-                        status.payload_path,
-                        status.source_url,
-                        int(status.success),
-                        int(status.partial),
-                        status.message,
-                        _dt(status.ingested_at),
-                        _dt(status.event_start),
-                        _dt(status.event_end),
-                        _dt(status.decision_time),
-                    )
-                    for status in report.source_statuses
-                ],
-            )
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO scorecards
-                (run_date, ticker, layer, event_tag, triggered, total_score, state,
-                 veto_reason, partial_coverage, payload_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        scorecard.run_date.isoformat(),
-                        scorecard.security.ticker,
-                        scorecard.security.layer.value,
-                        scorecard.event_tag.value,
-                        int(scorecard.triggered),
-                        scorecard.total_score,
-                        scorecard.state.value,
-                        scorecard.veto_reason,
-                        int(scorecard.partial_coverage),
-                        json.dumps(scorecard.to_dict(), sort_keys=True),
-                    )
-                    for scorecard in report.scorecards
-                ],
-            )
-            conn.commit()
-
-        return json_path, markdown_path
-
     def save_review_packets(self, run_date: date, packets: dict[str, dict]) -> list[Path]:
         packet_dir = self.data_dir / "reports" / run_date.isoformat() / "review_packets"
         packet_dir.mkdir(parents=True, exist_ok=True)
@@ -621,25 +549,14 @@ class Storage:
             paths.append(path)
         return paths
 
-    def save_review_queue(self, run_date: date, content: str) -> Path:
-        path = self.data_dir / "reports" / run_date.isoformat() / "review_queue.md"
-        path.write_text(content, encoding="utf-8")
-        return path
-
     def save_manual_agent_report(self, run_date: date, content: str) -> Path:
         path = self.data_dir / "reports" / run_date.isoformat() / "manual_agent_report.zh.md"
         path.write_text(content, encoding="utf-8")
         return path
 
-    def load_report_markdown(self, run_date: date) -> str:
-        path = self.data_dir / "reports" / run_date.isoformat() / "report.md"
-        return path.read_text(encoding="utf-8")
-
     def load_delivery_report_markdown(self, run_date: date) -> str:
-        detailed_path = self.data_dir / "reports" / run_date.isoformat() / "manual_agent_report.zh.md"
-        if detailed_path.exists():
-            return detailed_path.read_text(encoding="utf-8")
-        return self.load_report_markdown(run_date)
+        path = self.data_dir / "reports" / run_date.isoformat() / "manual_agent_report.zh.md"
+        return path.read_text(encoding="utf-8")
 
     def cleanup_retention(
         self,
@@ -931,66 +848,3 @@ def _row_to_filing_summary_cache(row: tuple) -> FilingSummaryCacheRow:
         key_metrics_json=row[8],
         ingested_at=datetime.fromisoformat(row[9]),
     )
-
-
-def render_markdown_report(report: DailyRunReport) -> str:
-    lines = [
-        f"# Daily Market Sentiment Report - {report.run_date.isoformat()}",
-        "",
-        f"- Generated At: `{report.generated_at.isoformat()}`",
-        f"- Triggered Tickers: `{report.triggered_count}`",
-        "",
-        "| Ticker | Layer | Event Tag | Triggered | Score | State | Partial | Veto |",
-        "|---|---|---|---:|---:|---|---:|---|",
-    ]
-    for scorecard in report.scorecards:
-        lines.append(
-            "| "
-            + " | ".join(
-                [
-                    scorecard.security.ticker,
-                    scorecard.security.layer.value,
-                    scorecard.event_tag.value,
-                    "yes" if scorecard.triggered else "no",
-                    str(scorecard.total_score),
-                    scorecard.state.value,
-                    "yes" if scorecard.partial_coverage else "no",
-                    scorecard.veto_reason or "",
-                ]
-            )
-            + " |"
-        )
-
-    for scorecard in report.scorecards:
-        lines.extend(
-            [
-                "",
-                f"## {scorecard.security.ticker}",
-                "",
-                f"- Layer: `{scorecard.security.layer.value}`",
-                f"- Event Tag: `{scorecard.event_tag.value}`",
-                f"- Triggered: `{scorecard.triggered}`",
-                f"- State: `{scorecard.state.value}`",
-                f"- Total Score: `{scorecard.total_score}`",
-                f"- Partial Coverage: `{scorecard.partial_coverage}`",
-                f"- Evidence: {', '.join(scorecard.evidence) if scorecard.evidence else 'n/a'}",
-                "",
-                f"- Fundamentals: `{scorecard.fundamentals.score}/{scorecard.fundamentals.max_score}`",
-                f"- Sentiment: `{scorecard.sentiment.score}/{scorecard.sentiment.max_score}`",
-                f"- Chain Confirmation: `{scorecard.chain_confirmation.score}/{scorecard.chain_confirmation.max_score}`",
-                f"- Price / Flow: `{scorecard.price_flow.score}/{scorecard.price_flow.max_score}`",
-                f"- Risk / Red Flags: `{scorecard.risk_red_flags.score}/{scorecard.risk_red_flags.max_score}`",
-            ]
-        )
-    if report.scorecards:
-        lines.extend(
-            [
-                "",
-                "## Agent Review Materials",
-                "",
-                "- Manual Agent Report (ZH): `manual_agent_report.zh.md`",
-                "- Review Queue: `review_queue.md`",
-                "- Review Packets Directory: `review_packets/`",
-            ]
-        )
-    return "\n".join(lines) + "\n"
