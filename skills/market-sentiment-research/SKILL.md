@@ -46,6 +46,21 @@ Rules:
 - Thin evidence, uncontrolled fresh lows, major scheduled catalysts, weak peer comparison, or low confidence should cap the action at `Watch`.
 - Final synthesis stays with the orchestrating agent. Subagents may summarize filings, news, social data, peers, or transcripts, but they should not make the final portfolio action.
 
+## Rule Engine vs LLM Judgement
+
+Review packets contain two layers:
+
+- **Layer 1 (advisory only)**: `bucket_scores`, `rule_engine_precheck`, `decision_summary`. These come from a deterministic Python rule engine. Treat them as a quick sanity check, not as a conclusion.
+- **Layer 2 (your evidence base)**: `price_context` (recent ~90 trading days of security and benchmark bars), `fundamentals_snapshot`, `official_events`, `social_summary`, `macro_summary`, `source_health`. These are the raw inputs you must reason over.
+
+Independent scoring is mandatory:
+
+1. Read the Layer 2 raw evidence first. Form your own view of each dimension (fundamentals strength, disclosure tone, peer/market context, price flow including MA-distance and recent lows, risk red flags, social rebound) before looking at Layer 1.
+2. Only after your independent assessment, compare with Layer 1. If your conclusion diverges from `rule_engine_precheck.state`, you must state explicitly in the report which Layer 2 evidence drove the divergence.
+3. Hard veto remains binding. When `rule_engine_precheck.veto_reason` is non-null (e.g., `negative_official_keyword`, `companyfacts_structural_break`), the action is capped at `Reject` regardless of your other reasoning. These vetos are objective conditions on SEC disclosures or filed financials, not soft signals.
+4. `bucket_scores` numeric values (e.g., `social_rebound: 0/10`) are mechanical and frequently noisy when sample sizes are small. Treat them as one observation, not as truth. Re-judge the dimension from the raw `social_summary` (especially `representative_posts`, `recent_stance`, `top_bullish_themes`, `top_bearish_themes`) when their sample is thin.
+5. Your output's final action (`Reject` / `Watch` / `Starter` / `Add` / `Exit`) is **your** judgement, not the rule engine's. Quote specific Layer 2 evidence (dates, numbers, post excerpts) when justifying it.
+
 ## Runtime Path
 
 For a daily pipeline run from the repository root:

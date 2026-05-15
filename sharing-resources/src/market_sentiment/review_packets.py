@@ -68,8 +68,8 @@ def build_review_packet(
             "price_context": {
                 "latest_security_bar": _serialize_price(latest_price),
                 "latest_benchmark_bar": _serialize_price(latest_benchmark),
-                "recent_security_bars": [_serialize_price(bar) for bar in prices[-21:]],
-                "recent_benchmark_bars": [_serialize_price(bar) for bar in benchmark_prices[-21:]],
+                "recent_security_bars": [_serialize_price(bar) for bar in prices[-90:]],
+                "recent_benchmark_bars": [_serialize_price(bar) for bar in benchmark_prices[-90:]],
             },
             "official_events": [_serialize_event(event) for event in context.official_events[:5]],
             "fundamentals_snapshot": _serialize_fundamentals(context.fundamentals),

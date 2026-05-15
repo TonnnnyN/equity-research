@@ -117,7 +117,7 @@ def render_manual_agent_report(
         "",
         "这份报告是 `Python 标准化 + 规则引擎预判` 之后的中文详细底稿。",
         "定位是帮助手动 Agent 或人工更快复核，所以会把价格触发、基本面证据、pipeline 信号和动作标准都放到同一份文件里。",
-        "当前版本给出的是 `规则引擎动作 + 规则解释`，最终人工/Agent 覆核结论可以在这份底稿之上继续覆盖。",
+        "以下每个 ticker 给出的 `规则引擎动作` 仅为**机器视角的快速预判**，并非最终结论。复核 Agent 必须自行读取证据卡片中的原始数据（价格序列、SEC 披露、财报快照、社交快照、宏观）独立打分，与规则引擎不一致时在最终报告中明确说明覆盖理由。`hard veto` 仍然生效（破产/欺诈/营收结构性断裂等客观条件下强制 Reject）。",
         "",
         "## 运行摘要",
         f"- 生成时间：`{report.generated_at.isoformat()}`",
@@ -221,7 +221,7 @@ def _render_security_card(card: ScoreCard, packet: dict[str, Any]) -> list[str]:
     lines = [
         "",
         f"### {card.security.ticker}",
-        f"- 规则引擎动作：`{card.state.value}`，总分 `{card.total_score}`，层级 `{card.security.layer.value}`",
+        f"- 机器预判（供参考，需 LLM 独立覆核）：`{card.state.value}`，机器总分 `{card.total_score}`，层级 `{card.security.layer.value}`",
         f"- 动作解释：{_rule_state_reason(card)}",
         f"- 事件归因：`{EVENT_TAG_LABELS.get(card.event_tag.value, card.event_tag.value)}`",
         f"- 数据完整性：`{'完整' if not card.partial_coverage else '部分缺口'}`",
