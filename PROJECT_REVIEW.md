@@ -409,6 +409,39 @@ orchestrator 用真凭证探了 Tiger SDK 所有相关接口:
 
 ---
 
+### 0.18 回测系统(2026-05-16)
+
+#### 0.18.1 本轮工作概述
+
+用户要求做一套**完整的回测系统**:用真实历史数据,按规则引擎产出的状态(Reject/Watch/Starter/Add)模拟仓位买卖,含手续费。范围**只做美股**(港股暂不管),回测窗口约 1 年。orchestrator 派 Haiku subagent 实现 data_loader / simulator / signal-exit,其余(as-of 基本面、status_engine、runner)由 orchestrator 自写。
+
+#### 0.18.2 新增文件(包 `sharing-resources/src/market_sentiment/backtest/`)
+
+- `__init__.py` — 包说明。
+- `data_loader.py` — 抓 2 年历史数据,写自包含 JSON 数据集。价格走 Yahoo Chart `range=2y`,**做了拆股/分红全口径复权**(`factor=adjclose/close`,OHLC 同步缩放,volume 反向),否则 NVDA 2024 年 10:1 拆股会看成 -90% 暴跌。SEC events + 原始 companyfacts 各抓一次。
+- `asof_fundamentals.py` — point-in-time 基本面。`build_fundamentals_timeline` 按 filing 的 `filed` 日期切片,每个 filing 日生成一份快照;`snapshot_asof(timeline, D)` 取 `filed<=D` 的最新一份。避免回测时基本面"看到未来"。
+- `status_engine.py` — 对每个决策日 × 每只美股,构造 as-of `PipelineContext`(prices/events/fundamentals 全部按日切片,social/options 略),复用生产 `compute_trigger` + `build_scorecard`,产出 status 记录。
+- `simulator.py` — 日级组合模拟。信号在收盘产生,**次日开盘成交**;Starter/Add 建仓($10k/笔,每标的最多 3 笔);手续费**每笔买/卖各 $2 固定**。退出规则四条,按优先级:① 止损 -12% ② 止盈 +25% ③ **信号退出 signal_exit**(持仓标的当天 status 变 Reject 或带 veto_reason → 次日开盘平仓)④ 最长持有 60 交易日。signal_exit 可经 `BacktestConfig.signal_exit_enabled` / CLI `--no-signal-exit` 关闭。
+- `runner.py` — 编排 dataset → statuses → simulation → report.md。
+
+新增脚本:`scripts/build_backtest_dataset.py`(建数据集 CLI)、`scripts/run_backtest.py`(跑回测 CLI)。
+新增测试:`sharing-resources/tests/test_backtest.py`,13 个单测。**全套测试 196 → 209,全绿**。
+
+#### 0.18.3 首跑结果(2025-05-15 ~ 2026-05-15,默认参数)
+
+期末权益 $105,902 / 总收益 +5.90% / 最大回撤 13.71% / 41 笔平仓 / 胜率 46.3% / 手续费 $226。平仓原因:止损 17、最长持有 11、止盈 8、回测结束 5。同期 QQQ +37%、SOXX +140% —— 策略是"逢跌轻仓低吸",2025-26 大牛市里跑输买入持有属预期,**不是 bug**。
+
+**signal_exit 实跑触发 0 次**:监测的都是 NVDA/META/LLY 这类大盘股,1079 条 status 里 Reject = 0、veto = 0,规则引擎从不否决这些优质大盘股的中途回调,所以信号退出虽已实现并通过单测,本轮数据未实际触发。
+
+#### 0.18.4 设计取舍
+
+- **social lane 不进回测**:历史社交情绪无法 point-in-time 重建,`social_snapshot=None` → social bucket 0/0,scoring 的 `achievable_max` 自动缩放(110→100)。
+- **fundamentals / sentiment 进回测**:这两桶来自 SEC(companyfacts + filing events),有真实历史时间戳,可按日还原。注意 `sentiment` 桶打的是 SEC 官方披露,不是社交情绪。
+- 数据集自包含在 `data/backtest/dataset/`(约 200MB,已被 `.gitignore` 的 `data/` 覆盖,不入库)。
+- 退出规则由 orchestrator 设计(规则引擎本身只产买入信号);止盈/止损/持有天数/signal_exit 全部可经 CLI 参数调。
+
+---
+
 ### 0.8 真实状态盘点 + 下一步路线(2026-05-14)
 
 #### 0.8.1 状态澄清:"代码到位" ≠ "端到端跑通"
