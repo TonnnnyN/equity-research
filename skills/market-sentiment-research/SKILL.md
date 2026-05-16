@@ -154,3 +154,39 @@ Then provide:
 - source links
 
 Keep the answer in the user's language unless they ask otherwise.
+
+### Agent Decision Record
+
+Whenever you issue a `Watch`, `Starter`, or `Add` recommendation, you MUST also write a machine-readable decision file to `data/decisions/<run_date>/<TICKER>.decision.json` with this schema:
+
+```json
+{
+  "ticker": "NVDA",
+  "decision_date": "2026-05-16",
+  "state": "STARTER",
+  "reference_close": 102.4,
+  "invalidate_conditions": [
+    {"metric": "pct_from_reference", "comparator": "<=", "threshold": -0.08, "window": 2, "note": "stop loss"}
+  ],
+  "rerate_conditions": [
+    {"metric": "days_to_earnings", "comparator": "<=", "threshold": 2, "window": 1, "note": "post-earnings re-judge"}
+  ]
+}
+```
+
+**Allowed metrics** (use exactly these):
+- `close` — latest close price (absolute)
+- `pct_from_reference` — (latest_close − reference_close) / reference_close
+- `close_vs_sma20` — latest_close / sma20 − 1
+- `new_low_20d` — 1.0 if latest close is a fresh 20-day low else 0.0
+- `days_held` — trading days since decision_date
+- `days_to_earnings` — trading/calendar days to next earnings (None-safe)
+
+**Comparators:** `<`, `<=`, `>`, `>=`, `==`
+
+The `note` field is a human-readable annotation ONLY. It is NEVER evaluated; the structured `metric/comparator/threshold` fields are the operative rule enforced by deterministic pipeline code.
+
+**Validation & enforcement:**
+- After writing the file, validate it against the schema (well-formed JSON, required fields present, metrics in the allowed set). FIX and REWRITE in-session if malformed.
+- `Starter`/`Add` require at least one `rerate_condition`; all three states require at least one `invalidate_condition`.
+- A malformed file reaching the pipeline will be rejected with a visible warning and the recommendation will not be tracked.

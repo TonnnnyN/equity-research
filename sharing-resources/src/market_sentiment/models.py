@@ -307,6 +307,15 @@ class ScoreCard:
 
 
 @dataclass(frozen=True)
+class DecisionCondition:
+    metric: str          # one of VALID_METRICS (see decision_schema.py)
+    comparator: str      # one of: < <= > >= ==
+    threshold: float
+    window: int = 1      # condition must hold N consecutive trading days
+    note: str = ""       # human-readable annotation; NON-OPERATIVE, never used for evaluation
+
+
+@dataclass(frozen=True)
 class EarningsCalendar:
     ticker: str
     next_earnings_date: date | None
