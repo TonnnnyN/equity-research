@@ -111,24 +111,52 @@ class SocialReboundTests(TestCase):
             relative_underperformance=0.08,
             new_low=False,
         )
+        # Build realistic 25-bar price series: ~22% decline over first ~18 bars, then modest bounce
+        base_date = date(2026, 2, 28)
+        prices = []
+        start_price = 125.0
+        trough_price = 97.5  # ~22% down from 125
+        end_price = 102.0    # bounced back to ~81.6% recovery
+
+        for i in range(25):
+            current_date = base_date + timedelta(days=i)
+            # Smooth decline phase (bars 0-17): from 125 to 97.5
+            if i < 18:
+                progress = i / 17.0  # 0 to 1
+                close_price = start_price - (start_price - trough_price) * progress
+                # Add minor noise; low is slightly below close, high is above
+                low = close_price - 1.5
+                high = close_price + 0.8
+                open_price = close_price + 0.5
+            # Recovery phase (bars 18-24): from 97.5 back to 102
+            else:
+                progress = (i - 18) / 6.0  # 0 to 1 over 6 bars
+                close_price = trough_price + (end_price - trough_price) * progress
+                # Strong closes in recovery: near the daily high
+                low = close_price - 0.5
+                high = close_price + 1.2
+                open_price = close_price - 0.7
+
+            prices.append(
+                PriceBar(
+                    ticker="MSFT",
+                    trading_date=current_date,
+                    open=round(open_price, 2),
+                    high=round(high, 2),
+                    low=round(low, 2),
+                    close=round(close_price, 2),
+                    volume=1000000.0,
+                    source="stooq",
+                )
+            )
+
         context = type(
             "Context",
             (),
             {
                 "security": security,
                 "benchmark_ticker": "QQQ",
-                "prices": [
-                    PriceBar(
-                        ticker="MSFT",
-                        trading_date=date(2026, 3, 25),
-                        open=100.0,
-                        high=102.0,
-                        low=98.0,
-                        close=101.0,
-                        volume=1000000.0,
-                        source="stooq",
-                    )
-                ],  # ensure price data ok for P0-3
+                "prices": prices,  # ensure price data ok for P0-3
                 "benchmark_prices": [],
                 "official_events": [
                     OfficialEvent(
