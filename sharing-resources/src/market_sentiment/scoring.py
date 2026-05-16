@@ -76,7 +76,6 @@ def build_scorecard(
 
     # Compute achievable max for base scorecard (without social)
     base_buckets = [fundamentals, sentiment, chain, price_flow, risk]
-    base_achievable_max = sum(b.max_score for b in base_buckets)
 
     # Compute achievable max for full scorecard (with social)
     all_buckets = base_buckets + [social_rebound]
@@ -87,7 +86,6 @@ def build_scorecard(
         veto_reason=veto_reason,
         trigger_reasons=trigger.reasons,
         new_low=trigger.new_low,
-        achievable_max=base_achievable_max,
     )
     candidate_state = map_state(
         total,

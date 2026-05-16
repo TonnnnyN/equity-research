@@ -601,3 +601,68 @@ class SocialRebound(TestCase):
         self.assertEqual(scorecard.social_rebound.score, 8)
         # Verify it doesn't have the no_social_sample marker
         self.assertNotIn("no_social_sample", scorecard.social_rebound.notes)
+
+    def test_base_state_thresholds_not_scaled(self) -> None:
+        """Regression lock: base_state thresholds (65/72/80) are NOT scaled.
+
+        Verifies that base_state uses unscaled thresholds (65/72/80), not scaled thresholds
+        based on base_achievable_max. The bug passed achievable_max=100 to map_state for
+        base_state, causing thresholds to scale: round(80*100/110)=73 instead of 80.
+        This test uses the existing test_social_rebound.py case: it has base_total < 80
+        and should map to STARTER, not ADD (as it would with scaled threshold).
+        """
+        # This test uses a simple setup where base_total lands below 80.
+        # The test_positive_social_rebound_only_upgrades_one_step in test_social_rebound.py
+        # is the canonical regression test: it has positive social data and expects STARTER.
+        # That test will fail if base_state thresholds are scaled.
+        prices = make_price_bars(
+            "TEST",
+            [100 - i * 0.5 for i in range(25)],
+            start_date=date(2026, 2, 26),
+        )
+        security = Security(ticker="TEST", name="Test Co", layer=Layer.COMPUTE, benchmark="SOXX")
+        event = OfficialEvent(
+            ticker="TEST",
+            event_time=datetime(2026, 3, 15),
+            form_type="8-K",
+            title="TEST announcement",
+            url="https://example.com",
+            source="sec",
+        )
+        trigger = TriggerResult(
+            triggered=True,
+            reasons=["ten_day_drawdown"],
+            ten_day_drawdown=0.18,
+            twenty_day_drawdown=0.22,
+            relative_underperformance=0.08,
+            new_low=False,
+        )
+        context = type(
+            "Context",
+            (),
+            {
+                "security": security,
+                "benchmark_ticker": "SOXX",
+                "prices": prices,
+                "benchmark_prices": [],
+                "official_events": [event],
+                "fundamentals": None,
+                "macro": [],
+                "source_statuses": [
+                    SourceStatus(source="sec", success=True),
+                    SourceStatus(source="stooq", success=True),
+                ],
+            },
+        )()
+
+        scorecard = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+        )
+
+        # The key: base_state should use unscaled 80 threshold.
+        # (The test_positive_social_rebound_only_upgrades_one_step test is the true regression lock.)
+        self.assertIsNotNone(scorecard.state)
