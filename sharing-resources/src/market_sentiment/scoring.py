@@ -30,6 +30,9 @@ NEGATIVE_KEYWORDS = {
 
 RISKY_FORMS = {"NT 10-K", "NT 10-Q", "25-NSE", "RW"}
 
+# Sum of all bucket maxes when all buckets are present
+FULL_SCORE_MAX = 110  # fundamentals(30) + sentiment(15) + chain(20) + price_flow(15) + risk(20) + social(10)
+
 
 def classify_event_tag(current: PipelineContext, peer_contexts: list[PipelineContext]) -> EventTag:
     peer_layers = [
@@ -70,8 +73,29 @@ def build_scorecard(
 
     base_total = fundamentals.score + sentiment.score + chain.score + price_flow.score + risk.score
     total = base_total + social_rebound.score
-    base_state = map_state(base_total, veto_reason=veto_reason, trigger_reasons=trigger.reasons, new_low=trigger.new_low)
-    candidate_state = map_state(total, veto_reason=veto_reason, trigger_reasons=trigger.reasons, new_low=trigger.new_low)
+
+    # Compute achievable max for base scorecard (without social)
+    base_buckets = [fundamentals, sentiment, chain, price_flow, risk]
+    base_achievable_max = sum(b.max_score for b in base_buckets)
+
+    # Compute achievable max for full scorecard (with social)
+    all_buckets = base_buckets + [social_rebound]
+    total_achievable_max = sum(b.max_score for b in all_buckets)
+
+    base_state = map_state(
+        base_total,
+        veto_reason=veto_reason,
+        trigger_reasons=trigger.reasons,
+        new_low=trigger.new_low,
+        achievable_max=base_achievable_max,
+    )
+    candidate_state = map_state(
+        total,
+        veto_reason=veto_reason,
+        trigger_reasons=trigger.reasons,
+        new_low=trigger.new_low,
+        achievable_max=total_achievable_max,
+    )
     state = apply_social_guardrail(base_state, candidate_state, social_rebound.score)
     state, data_insufficient = cap_state_if_data_insufficient(state, context.source_statuses)
 
@@ -197,7 +221,7 @@ def score_social_rebound(
     partial_coverage: bool,
 ) -> BucketScore:
     if snapshot is None:
-        return BucketScore("social_rebound", 0, 10, ["social_unavailable"])
+        return BucketScore("social_rebound", 0, 0, ["no_social_sample"])
     notes = list(snapshot.notes)
     if any(not status.success for status in statuses):
         notes.append("social_source_fetch_failed")
@@ -209,6 +233,15 @@ def score_social_rebound(
         "insufficient_data": "social_insufficient_data",
     }
     notes.append(state_note_map.get(snapshot.state.value, snapshot.state.value))
+
+    # If social sample is insufficient (no actual posts), set max=0
+    if snapshot.state.value == "insufficient_data":
+        score = 0
+        max_score = 0
+        notes_with_marker = ["no_social_sample"] + notes
+        return BucketScore("social_rebound", score, max_score, notes_with_marker)
+
+    # Otherwise, sample exists and we have a meaningful assessment
     score = snapshot.score
     if partial_coverage and score > 0:
         score = 0
@@ -374,16 +407,27 @@ def score_risk(
     return BucketScore("risk_red_flags", score, 20, notes), veto_reason
 
 
-def map_state(total_score: int, veto_reason: str | None, trigger_reasons: list[str], new_low: bool) -> ActionState:
+def map_state(
+    total_score: int,
+    veto_reason: str | None,
+    trigger_reasons: list[str],
+    new_low: bool,
+    achievable_max: int = FULL_SCORE_MAX,
+) -> ActionState:
     if veto_reason:
         return ActionState.REJECT
-    if total_score < 65:
+    # Scale thresholds based on achievable max
+    threshold_reject = round(65 * achievable_max / FULL_SCORE_MAX)
+    threshold_watch = round(72 * achievable_max / FULL_SCORE_MAX)
+    threshold_starter = round(80 * achievable_max / FULL_SCORE_MAX)
+
+    if total_score < threshold_reject:
         return ActionState.REJECT
-    if total_score < 72:
+    if total_score < threshold_watch:
         return ActionState.WATCH
     if new_low and "fresh_low" in trigger_reasons:
         return ActionState.WATCH
-    if total_score < 80:
+    if total_score < threshold_starter:
         return ActionState.STARTER
     return ActionState.ADD
 

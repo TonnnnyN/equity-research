@@ -13,11 +13,18 @@ from market_sentiment.models import (
     OptionSnapshot,
     PriceBar,
     Security,
+    SocialReboundState,
+    SocialSnapshot,
     SourceStatus,
     TriggerResult,
 )
 from market_sentiment.pipeline import dedupe_statuses
-from market_sentiment.scoring import build_scorecard, cap_state_if_data_insufficient, score_price_flow
+from market_sentiment.scoring import (
+    build_scorecard,
+    cap_state_if_data_insufficient,
+    score_price_flow,
+    score_social_rebound,
+)
 
 
 class ScoringTests(TestCase):
@@ -332,3 +339,265 @@ class PriceFlowTests(TestCase):
         self.assertGreaterEqual(result.score, 0)
         self.assertLessEqual(result.score, 15)
         self.assertEqual(result.max_score, 15)
+
+
+class SocialRebound(TestCase):
+    def test_social_rebound_no_sample_sets_max_zero(self) -> None:
+        """Empty social snapshot → bucket max == 0, note contains 'no_social_sample'."""
+        result = score_social_rebound(snapshot=None, statuses=[], partial_coverage=False)
+
+        self.assertEqual(result.score, 0)
+        self.assertEqual(result.max_score, 0)
+        self.assertIn("no_social_sample", result.notes)
+
+    def test_social_rebound_insufficient_data_sets_max_zero(self) -> None:
+        """Social sample present but insufficient_data state → max == 0, no_social_sample note."""
+        snapshot = SocialSnapshot(
+            ticker="TEST",
+            run_date=date(2026, 3, 26),
+            recent_window_hours=72,
+            baseline_days=30,
+            provider_count=3,
+            community_count=0,
+            total_posts=0,
+            informative_posts=0,
+            recent_posts=0,
+            baseline_posts=0,
+            unique_authors=0,
+            author_concentration=0.0,
+            recent_stance=0.0,
+            baseline_stance=0.0,
+            delta=0.0,
+            breadth=0.0,
+            hard_negative_ratio=0.0,
+            state=SocialReboundState.INSUFFICIENT,
+            score=0,
+        )
+        result = score_social_rebound(snapshot=snapshot, statuses=[], partial_coverage=False)
+
+        self.assertEqual(result.score, 0)
+        self.assertEqual(result.max_score, 0)
+        self.assertIn("no_social_sample", result.notes)
+
+    def test_social_rebound_neutral_sample_keeps_max_ten(self) -> None:
+        """Social sample present but neutral → max == 10, score == 0."""
+        snapshot = SocialSnapshot(
+            ticker="TEST",
+            run_date=date(2026, 3, 26),
+            recent_window_hours=72,
+            baseline_days=30,
+            provider_count=3,
+            community_count=5,
+            total_posts=50,
+            informative_posts=30,
+            recent_posts=10,
+            baseline_posts=15,
+            unique_authors=8,
+            author_concentration=0.2,
+            recent_stance=0.0,
+            baseline_stance=0.0,
+            delta=0.0,
+            breadth=0.5,
+            hard_negative_ratio=0.1,
+            state=SocialReboundState.FLAT,
+            score=0,
+        )
+        result = score_social_rebound(snapshot=snapshot, statuses=[], partial_coverage=False)
+
+        self.assertEqual(result.score, 0)
+        self.assertEqual(result.max_score, 10)
+        self.assertIn("social_flat_unclear", result.notes)
+        self.assertNotIn("no_social_sample", result.notes)
+
+    def test_social_rebound_positive_sample_keeps_max_ten(self) -> None:
+        """Social sample with positive score → max == 10, score > 0."""
+        snapshot = SocialSnapshot(
+            ticker="TEST",
+            run_date=date(2026, 3, 26),
+            recent_window_hours=72,
+            baseline_days=30,
+            provider_count=3,
+            community_count=5,
+            total_posts=100,
+            informative_posts=80,
+            recent_posts=30,
+            baseline_posts=15,
+            unique_authors=15,
+            author_concentration=0.15,
+            recent_stance=0.7,
+            baseline_stance=0.2,
+            delta=0.5,
+            breadth=0.8,
+            hard_negative_ratio=0.05,
+            state=SocialReboundState.STRONG_REBOUND,
+            score=8,
+        )
+        result = score_social_rebound(snapshot=snapshot, statuses=[], partial_coverage=False)
+
+        self.assertEqual(result.score, 8)
+        self.assertEqual(result.max_score, 10)
+        self.assertIn("social_strong_rebound", result.notes)
+
+    def test_map_state_thresholds_scale_when_social_absent(self) -> None:
+        """Two identical scorecards, one with social, one without; no-social not penalized."""
+        security = Security(ticker="TEST", name="Test Co", layer=Layer.COMPUTE, benchmark="SOXX")
+        trigger = TriggerResult(
+            triggered=True,
+            reasons=["ten_day_drawdown"],
+            ten_day_drawdown=0.2,
+            twenty_day_drawdown=0.25,
+            relative_underperformance=0.1,
+            new_low=False,
+        )
+        # Create context with 25 price bars (sufficient for price_flow scoring)
+        prices = make_price_bars(
+            "TEST",
+            [100 - i * 0.5 for i in range(25)],  # gentle downtrend: 100, 99.5, 99, ..., 87.5
+            start_date=date(2026, 2, 26),
+        )
+        context_base = type(
+            "Context",
+            (),
+            {
+                "security": security,
+                "benchmark_ticker": "SOXX",
+                "prices": prices,
+                "benchmark_prices": [],
+                "official_events": [],
+                "fundamentals": None,
+                "macro": [],
+                "source_statuses": [SourceStatus(source="stooq", success=True)],
+            },
+        )()
+
+        # Build scorecard without social
+        scorecard_no_social = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context_base,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+        )
+
+        # Build scorecard with social (neutral sample, max=10)
+        snapshot = SocialSnapshot(
+            ticker="TEST",
+            run_date=date(2026, 3, 26),
+            recent_window_hours=72,
+            baseline_days=30,
+            provider_count=3,
+            community_count=5,
+            total_posts=50,
+            informative_posts=30,
+            recent_posts=10,
+            baseline_posts=15,
+            unique_authors=8,
+            author_concentration=0.2,
+            recent_stance=0.0,
+            baseline_stance=0.0,
+            delta=0.0,
+            breadth=0.5,
+            hard_negative_ratio=0.1,
+            state=SocialReboundState.FLAT,
+            score=0,
+        )
+        context_with_social = type(
+            "Context",
+            (),
+            {
+                "security": security,
+                "benchmark_ticker": "SOXX",
+                "prices": prices,
+                "benchmark_prices": [],
+                "official_events": [],
+                "fundamentals": None,
+                "macro": [],
+                "source_statuses": [SourceStatus(source="stooq", success=True)],
+                "social_snapshot": snapshot,
+                "social_source_statuses": [SourceStatus(source="social_api", success=True)],
+            },
+        )()
+
+        scorecard_with_social = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context_with_social,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+        )
+
+        # Both should map to the same state (threshold scaling means no-social is not penalized)
+        # since the social score is 0 (neutral), adding it doesn't help, but achievable_max scales the threshold
+        self.assertEqual(
+            scorecard_no_social.state,
+            scorecard_with_social.state,
+            msg=f"no_social state={scorecard_no_social.state}, with_social state={scorecard_with_social.state}",
+        )
+
+    def test_existing_with_social_behavior_unchanged(self) -> None:
+        """Ticker with positive social data preserves max_score=10 for social bucket."""
+        security = Security(ticker="TEST", name="Test Co", layer=Layer.COMPUTE, benchmark="SOXX")
+        trigger = TriggerResult(
+            triggered=True,
+            reasons=["ten_day_drawdown"],
+            ten_day_drawdown=0.2,
+            twenty_day_drawdown=0.25,
+            relative_underperformance=0.1,
+            new_low=False,
+        )
+        prices = make_price_bars(
+            "TEST",
+            [100 - i * 0.5 for i in range(25)],
+            start_date=date(2026, 2, 26),
+        )
+        snapshot = SocialSnapshot(
+            ticker="TEST",
+            run_date=date(2026, 3, 26),
+            recent_window_hours=72,
+            baseline_days=30,
+            provider_count=3,
+            community_count=5,
+            total_posts=100,
+            informative_posts=80,
+            recent_posts=30,
+            baseline_posts=15,
+            unique_authors=15,
+            author_concentration=0.15,
+            recent_stance=0.7,
+            baseline_stance=0.2,
+            delta=0.5,
+            breadth=0.8,
+            hard_negative_ratio=0.05,
+            state=SocialReboundState.STRONG_REBOUND,
+            score=8,
+        )
+        context = type(
+            "Context",
+            (),
+            {
+                "security": security,
+                "benchmark_ticker": "SOXX",
+                "prices": prices,
+                "benchmark_prices": [],
+                "official_events": [],
+                "fundamentals": None,
+                "macro": [],
+                "source_statuses": [SourceStatus(source="stooq", success=True)],
+                "social_snapshot": snapshot,
+                "social_source_statuses": [SourceStatus(source="social_api", success=True)],
+            },
+        )()
+
+        scorecard = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+        )
+
+        # Verify social bucket has max=10 and positive score (not max=0)
+        self.assertEqual(scorecard.social_rebound.max_score, 10)
+        self.assertEqual(scorecard.social_rebound.score, 8)
+        # Verify it doesn't have the no_social_sample marker
+        self.assertNotIn("no_social_sample", scorecard.social_rebound.notes)
