@@ -1293,6 +1293,34 @@ orchestrator(我)→ Haiku subagent 矩阵:
 - reviewer 验证：公式逐条核对、正交性确认、basing 票得 13 分 / 飞刀票得 2 分、155/155 测试通过
 - 配套：`test_social_rebound.py` 一个 fixture 从 1 根 bar 扩到 25 根真实序列（旧测试靠 `trigger` 间接喂分，新签名需要真实 OHLCV）
 
+### 已完成
+
+#### F. 社交分数 0 vs None 区分（P2）✅ 已完成
+- 问题：NRG 类冷门票 0 帖被打 0 分，与"中性观望"的 0 分无法区分
+- 修复：
+  - `score_social_rebound()` 现在在无社交样本时返回社交桶、`max_score=0` 和 `note="no_social_sample"`；有样本但中性时返回 `max_score=10, score=0`，清晰区分"无数据"和"已知中性"
+  - `map_state()` 新增阈值缩放：`candidate_state` 的 3 个分界（65/72/80）基于桶的 `achievable_max / 110` 比例调整，使无社交票（achievable_max=100）按其真实最高分判段，无结构性惩罚
+  - 实现曲折：第一版（`b7f27c0`）误将 achievable_max 也传入 base_state 调用，导致所有票的基础阈值都被错误缩放；测试失败后在 `e167fd3` 修正——base_state（0-100 固定）不缩放，仅 candidate_state（社交/情绪等可变桶）缩放
+- 涉及文件：`sharing-resources/src/market_sentiment/scoring.py`（`score_social_rebound`、`map_state`）、测试覆盖
+- Commits：`b7f27c0`（社交桶逻辑）、`e167fd3`（base_state 回归修复）
+
+#### G. `invalidate_if` / `rerate_if` 改为机器可读（P2）✅ 已完成
+- 原问题：主 agent 输出的条件是 LLM 文本，无法在后续日自动求值
+- 实现：全链条 5 commit 决策跟踪系统
+  - **G1-Schema（`6f3a2b8`）**：`models.py` 新增 `DecisionCondition` dataclass；`decision_schema.py` 定义 6 个可机器读的 metric（`close`, `pct_from_reference`, `close_vs_sma20`, `new_low_20d`, `days_held`, `days_to_earnings`）；SKILL.md 定约：主 agent 每条 Watch/Starter/Add 建议需输出 `data/decisions/<run_date>/<TICKER>.decision.json`，含结构化 `invalidate_conditions[]` 和 `rerate_conditions[]`，并自验证
+  - **G2-Storage（`274877f`）**：`storage.py` 新增 `active_decisions` SQLite 表（ticker, decision_date, status, conditions JSON, last_checked, created_at）；status 枚举 `active | invalidated | rerated | expired | superseded`；条件存 JSON blob；自动清理 180 天前非 active 行
+  - **G2-Tracker（`51eb947`）**：`decision_tracker.py` 纯 Python 决策求值引擎。`load_decision_files()` 扫决策文件、验证 schema；`evaluate_decision()` 检查有效期（>30 交易日→expired）→invalidate 条件→rerate 条件；price metrics 要求 N 连续交易日满足；零 LLM 调用
+  - **G2-Wiring（`1b0f3f7`）**：`pipeline.py` `_track_decisions()` 于每日 run-daily 执行：ingest 新决策文件（已存在的 (ticker, decision_date) 跳过，不复活已 invalidated 决策）→对每条 active 决策用新鲜价格/财报数据求值→更新状态→生成"持仓条件监控"人类报告段。全程防御，决策追踪故障不阻塞 daily
+  - 当前决策跟踪日常工作流：
+    1. 主 agent 出 Watch/Starter/Add 建议时，写一份结构化 `.decision.json` 件（含可机器读的 invalidate/rerate 条件）
+    2. 次日 `run-daily` 启动 pipeline，新决策文件 ingest 进 `active_decisions` 表（已存在跳过，杜绝复活失效决策）
+    3. 对每条 active 决策纯 Python 拉最新价格/财报数据，求值条件，零 LLM 上下文消耗
+    4. 命中 invalidate/rerate 条件或满 30 交易日 → 状态终结；否则保持 active、更新 last_checked
+    5. 结果进人类报告的「持仓条件监控」段
+    - **重要澄清**：`status="active"` 表示"建议仍在监控中"，非"已买入"——本项目无自动交易接口，入场仍由用户手动操作。`note` 是给人看的非操作注释，求值只认结构化 `metric / comparator / threshold`
+- 涉及文件：`models.py`、`decision_schema.py`（新）、`decision_tracker.py`（新）、`storage.py`、`pipeline.py`、`manual_agent_report.py`、SKILL.md
+- Commits：`6f3a2b8`、`274877f`、`51eb947`、`1b0f3f7`
+
 ### 已认领但延后
 
 #### E. 回测脚手架（P0，独立工程）
@@ -1300,16 +1328,6 @@ orchestrator(我)→ Haiku subagent 矩阵:
 - 计划：新建 `sharing-resources/scripts/backtest_triggers.py`，walk-forward 跑 2 年历史数据，对每个 trigger 日记录 1w/2w/4w forward return，按 ActionState bucket 出命中率分布
 - 工作量估算：2-3 天，与主 pipeline 解耦，无回滚风险
 - 现状：待用户决定是否启动
-
-#### F. 社交分数 0 vs None 区分（P2）
-- 问题：NRG 类冷门票 0 帖被打 0 分，与"中性观望"的 0 分无法区分
-- 修复：`scoring.py:191-217` 让无样本时 social_rebound 返回 `None`，`total_score` 计算自动跳过该桶，`map_state` 阈值按动态可达 max 调整
-- 估算：< 50 行；与 Round 1 / Round 2 无冲突，可独立派
-
-#### G. `invalidate_if` / `rerate_if` 改为机器可读（P2）
-- 当前是 LLM 文本输出，无法在后续日 pipeline 自动 alert 失效
-- 修复：review packet schema 加 `invalidate_conditions: list[dict]` 字段，含 `metric / comparator / threshold`
-- 估算：中等工程量；要先想清楚字典 schema，需要单独设计讨论
 
 ### 主动决定不做（audit 提到但 noted）
 
@@ -1329,4 +1347,4 @@ orchestrator(我)→ Haiku subagent 矩阵:
 
 ---
 
-*本节基于 commit `6bde150`，结合 Sonnet 中长线量化视角审计报告（2026-05-15）整理。*
+*本节基于 commit `6bde150`，结合 Sonnet 中长线量化视角审计报告（2026-05-15）整理。F 与 G 更新基于 commit `b7f27c0`、`e167fd3`、`6f3a2b8`、`274877f`、`51eb947`、`1b0f3f7`。*
