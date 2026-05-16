@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import os
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 
 from market_sentiment.config import ProjectConfig, load_config
+from market_sentiment.decision_tracker import DecisionAlert, evaluate_decision, load_decision_files
 from market_sentiment.http import HttpClient
 from market_sentiment.manual_agent_report import render_manual_agent_report
 from market_sentiment.models import (
@@ -36,6 +38,15 @@ from market_sentiment.storage import Storage
 from market_sentiment.triggers import compute_trigger
 
 
+@dataclass
+class DecisionTrackingResult:
+    """Result of a full decision-tracking pass during the daily run."""
+
+    ingest_warnings: list[str]
+    alerts: list[DecisionAlert]
+    active_summaries: list[dict]
+
+
 class DailyPipeline:
     def __init__(self, config: ProjectConfig | None = None) -> None:
         self.config = config or load_config()
@@ -64,9 +75,130 @@ class DailyPipeline:
     def preflight(self) -> PreflightSummary:
         return build_preflight_summary(self.config)
 
+    def _track_decisions(self, run_date: date) -> DecisionTrackingResult:
+        """
+        Execute a full decision-tracking pass:
+        (a) Ingest new decision files from data/decisions/<date>/ subdirs.
+        (b) Evaluate active decisions against fresh market data.
+        (c) Return a result with warnings, fired alerts, and summaries of still-active decisions.
+
+        This method is defensive: any unhandled exception logs and returns an empty result,
+        never breaking the main daily run.
+        """
+        ingest_warnings: list[str] = []
+        alerts: list[DecisionAlert] = []
+        active_summaries: list[dict] = []
+
+        try:
+            # (a) Ingest new decision files from data/decisions/
+            decisions_dir = self.storage.data_dir / "decisions"
+            if decisions_dir.exists():
+                for subdir in sorted(decisions_dir.iterdir()):
+                    if not subdir.is_dir():
+                        continue
+
+                    valid_payloads, warnings = load_decision_files(subdir)
+                    ingest_warnings.extend(warnings)
+
+                    for payload in valid_payloads:
+                        ticker = payload.get("ticker", "?")
+                        decision_date = payload.get("decision_date", "?")
+
+                        # Skip if already in the table (don't resurrect invalidated decisions).
+                        existing = self.storage.read_all_decisions_for_ticker(ticker)
+                        if any(row["decision_date"] == decision_date for row in existing):
+                            continue
+
+                        self.storage.upsert_active_decision(
+                            ticker=ticker,
+                            decision_date=decision_date,
+                            state=payload.get("state", ""),
+                            reference_close=float(payload.get("reference_close", 0)),
+                            invalidate_conditions=payload.get("invalidate_conditions", []),
+                            rerate_conditions=payload.get("rerate_conditions", []),
+                            status="active",
+                        )
+
+            # (b) Evaluate active decisions.
+            active_decisions = self.storage.read_active_decisions()
+            for decision in active_decisions:
+                ticker = decision["ticker"]
+                decision_date = decision["decision_date"]
+
+                # Fetch prices for this ticker.
+                prices_payload, _ = self._fetch_prices_with_fallback(ticker, run_date)
+                bars = self._filter_prices_as_of(prices_payload.data, run_date)
+
+                # Fetch earnings if readily available.
+                earnings = None
+                try:
+                    earnings_payload = self.earnings_calendar.fetch_next_earnings(ticker, run_date)
+                    earnings = earnings_payload.data
+                except Exception:
+                    # Earnings is optional; pass None if fetch fails.
+                    pass
+
+                # Evaluate the decision.
+                alert = evaluate_decision(decision, bars=bars, earnings=earnings, run_date=run_date)
+
+                if alert:
+                    # Decision fired; update its status.
+                    alerts.append(alert)
+                    self.storage.update_decision_status(
+                        ticker=ticker,
+                        decision_date=decision_date,
+                        status=alert.kind,
+                        status_reason=alert.reason,
+                        last_checked_date=run_date.isoformat(),
+                    )
+                else:
+                    # Decision still active; bump last_checked_date only.
+                    self.storage.update_decision_status(
+                        ticker=ticker,
+                        decision_date=decision_date,
+                        status="active",
+                        status_reason=None,
+                        last_checked_date=run_date.isoformat(),
+                    )
+
+                    # Build summary for still-active decision.
+                    invalidate_conds = decision.get("invalidate_conditions", [])
+                    rerate_conds = decision.get("rerate_conditions", [])
+
+                    # Render conditions compactly for the report.
+                    invalidate_strs = [
+                        f"{cond.get('metric', '?')} {cond.get('comparator', '?')} {cond.get('threshold', '?')}"
+                        for cond in invalidate_conds
+                    ]
+                    rerate_strs = [
+                        f"{cond.get('metric', '?')} {cond.get('comparator', '?')} {cond.get('threshold', '?')}"
+                        for cond in rerate_conds
+                    ]
+
+                    summary = {
+                        "ticker": ticker,
+                        "state": decision["state"],
+                        "decision_date": decision_date,
+                        "invalidate_conditions": invalidate_strs,
+                        "rerate_conditions": rerate_strs,
+                        "status": "未触发",
+                    }
+                    active_summaries.append(summary)
+
+        except Exception as exc:
+            # Log and return empty result if anything goes wrong; never break the pipeline.
+            ingest_warnings.append(f"Decision tracking pass failed: {exc}")
+
+        return DecisionTrackingResult(
+            ingest_warnings=ingest_warnings,
+            alerts=alerts,
+            active_summaries=active_summaries,
+        )
+
     def run(self, run_date: date) -> DailyRunReport:
         self.storage.init_db()
         decision_time = datetime.now(timezone.utc)
+        decision_tracking_result = self._track_decisions(run_date)
         benchmark_prices, benchmark_statuses, benchmark_status_map = self._fetch_benchmarks(run_date)
         macro_data, macro_statuses = self._fetch_macro(run_date)
         contexts: list[PipelineContext] = []
@@ -155,7 +287,10 @@ class DailyPipeline:
             source_statuses=dedupe_statuses(all_statuses + macro_statuses, decision_time),
         )
         self.storage.save_review_packets(run_date, review_packets)
-        self.storage.save_manual_agent_report(run_date, render_manual_agent_report(report, review_packets))
+        self.storage.save_manual_agent_report(
+            run_date,
+            render_manual_agent_report(report, review_packets, decision_tracking_result),
+        )
         return report
 
     def _fetch_benchmarks(

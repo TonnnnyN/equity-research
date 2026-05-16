@@ -111,6 +111,7 @@ NOTE_LABELS = {
 def render_manual_agent_report(
     report: DailyRunReport,
     packets: dict[str, dict[str, Any]],
+    decision_tracking_result: Any = None,
 ) -> str:
     lines = [
         f"# {report.run_date.isoformat()} 手动 Agent 详细复核底稿",
@@ -140,6 +141,13 @@ def render_manual_agent_report(
             "",
             "## 动作分布",
             *(f"- `{state}`：`{counts.get(state, 0)}`" for state in ["Add", "Starter", "Watch", "Reject"]),
+            "",
+            "## 持仓条件监控",
+        ]
+    )
+    lines.extend(_render_decision_tracking(decision_tracking_result))
+    lines.extend(
+        [
             "",
             "## 总览表",
             "",
@@ -524,3 +532,72 @@ def _format_float(value: float | None, digits: int = 2) -> str:
     if value is None:
         return "n/a"
     return f"{value:.{digits}f}"
+
+
+def _render_decision_tracking(decision_tracking_result: Any) -> list[str]:
+    """
+    Render the Position Watch section for decision tracking.
+
+    If decision_tracking_result is None or has no decisions, show "当前无跟踪中的建议。"
+    Otherwise, render:
+    - Ingest warnings (if any)
+    - Fired alerts (if any)
+    - Still-active decisions in a compact table
+    """
+    lines: list[str] = []
+
+    if decision_tracking_result is None:
+        lines.append("- 当前无跟踪中的建议。")
+        return lines
+
+    ingest_warnings = decision_tracking_result.ingest_warnings or []
+    alerts = decision_tracking_result.alerts or []
+    active_summaries = decision_tracking_result.active_summaries or []
+
+    if not ingest_warnings and not alerts and not active_summaries:
+        lines.append("- 当前无跟踪中的建议。")
+        return lines
+
+    # Render ingest warnings if present
+    if ingest_warnings:
+        lines.append("### 决策文件问题")
+        for warning in ingest_warnings:
+            lines.append(f"- ⚠️ {warning}")
+        lines.append("")
+
+    # Render fired alerts
+    if alerts:
+        lines.append("### 已触发的决策")
+        for alert in alerts:
+            kind_label = {
+                "invalidated": "失效",
+                "rerated": "重评",
+                "expired": "到期",
+            }.get(alert.kind, alert.kind)
+            lines.append(f"- `{alert.ticker}` ({kind_label})：{alert.reason}")
+        lines.append("")
+
+    # Render still-active decisions in a table
+    if active_summaries:
+        lines.append("### 监控中的建议")
+        lines.append("")
+        lines.append(
+            "| Ticker | 建议状态 | 决策日期 | 失效条件 | 重评条件 | 状态 |"
+        )
+        lines.append("|---|---|---|---|---|---|")
+        for summary in active_summaries:
+            ticker = summary.get("ticker", "?")
+            state = summary.get("state", "?")
+            decision_date = summary.get("decision_date", "?")
+            invalidate_strs = summary.get("invalidate_conditions", [])
+            rerate_strs = summary.get("rerate_conditions", [])
+            status = summary.get("status", "?")
+
+            invalidate_text = "; ".join(invalidate_strs) if invalidate_strs else "无"
+            rerate_text = "; ".join(rerate_strs) if rerate_strs else "无"
+
+            lines.append(
+                f"| `{ticker}` | `{state}` | `{decision_date}` | {invalidate_text} | {rerate_text} | {status} |"
+            )
+
+    return lines
