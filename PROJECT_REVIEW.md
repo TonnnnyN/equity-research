@@ -1282,15 +1282,18 @@ orchestrator(我)→ Haiku subagent 矩阵:
   - **先暴露字段，不加硬 cap**，让主 agent 自己决定是否降级——保守起步，留观察空间
   - 数据源失败时给 `None` 而非阻塞 pipeline
 
-### 已认领但延后
+#### D. 重新设计 `price_flow` 桶（P0）— ✅ 已完成（commit `a8fc983` + `52476ce`）
+- 问题：旧 `score_price_flow(trigger)` 直接 scale 触发器用的 `ten_day_drawdown / twenty_day_drawdown / relative_underperformance`，与触发器**完全是同一组变量**——双重计分，机械地给跌得最惨的票最高分（飞刀拿高分）
+- 修复：签名改为 `score_price_flow(security_prices: list[PriceBar])`，与触发器完全正交，改为度量"回撤后的价格行为"。15 分拆 3 个独立组件：
+  - **① 企稳（0-6）**：最近 3 日最低收盘是否 ≥ 前 17 日最低（不创新低，+3）；离 20 日低点反弹幅度（`min(3, round(bounce_pct×60))`）
+  - **② 短均线收复（0-5）**：收盘站上 5d SMA +2、站上 10d SMA +2、5d SMA 上穿 10d SMA +1
+  - **③ 日内收盘强度（0-4）**：最近 5 日 `(收盘-最低)/(最高-最低)` 均值，按 `min(4, round((avg-0.3)×10))` 计分
+- 量能组件**暂不加**（fallback 链各源成交量口径不一致，会脏）
+- `len(bars) < 21` 时返回 0 + `insufficient_price_history` note
+- reviewer 验证：公式逐条核对、正交性确认、basing 票得 13 分 / 飞刀票得 2 分、155/155 测试通过
+- 配套：`test_social_rebound.py` 一个 fixture 从 1 根 bar 扩到 25 根真实序列（旧测试靠 `trigger` 间接喂分，新签名需要真实 OHLCV）
 
-#### D. 重新设计 `price_flow` 桶（P0，但需要设计决策）
-- audit 发现 `score_price_flow`（`scoring.py:245-260`）直接 scale 触发器用的 `ten_day_drawdown / twenty_day_drawdown / relative_underperformance`，与触发器**完全是同一组变量**——双重计分，机械地给跌得最惨的票最高分
-- 候选新语义（待用户决策）：
-  1. "回撤后形态" — 最近 3-5 日是否站上 5d MA、量能是否放大
-  2. "距 50d SMA 距离" — 偏离 MA 越远（无论方向）越弱
-  3. 直接删除桶，把 15 分重新分配
-- 现状：保留为 P0 / 需要先讨论新公式再派工
+### 已认领但延后
 
 #### E. 回测脚手架（P0，独立工程）
 - audit 把"零 backtest"列为单项最大缺口，但定位需要先想清楚：本 skill 是 LLM 主 agent 决策框架，不是自动交易策略。回测能验证的是规则引擎的 trigger frequency 和 bucket → forward return 关系，**不能**验证主 agent 的最终决策
