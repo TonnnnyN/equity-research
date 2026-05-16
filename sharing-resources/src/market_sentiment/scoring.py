@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from statistics import mean
 
 from market_sentiment.models import (
     ActionState,
@@ -10,6 +11,7 @@ from market_sentiment.models import (
     OfficialEvent,
     OptionSnapshot,
     PipelineContext,
+    PriceBar,
     ScoreCard,
     SocialSnapshot,
     SourceStatus,
@@ -63,7 +65,7 @@ def build_scorecard(
         partial_coverage=partial_coverage,
     )
     chain = score_chain(context, event_tag, peer_contexts)
-    price_flow = score_price_flow(trigger)
+    price_flow = score_price_flow(context.prices)
     risk, veto_reason = score_risk(context.official_events, trigger.reasons, context.fundamentals)
 
     base_total = fundamentals.score + sentiment.score + chain.score + price_flow.score + risk.score
@@ -242,21 +244,88 @@ def score_chain(context: PipelineContext, event_tag: EventTag, peer_contexts: li
     return BucketScore("chain_confirmation", max(0, min(score, 20)), 20, notes)
 
 
-def score_price_flow(trigger) -> BucketScore:
-    score = 0
+def score_price_flow(security_prices: list[PriceBar]) -> BucketScore:
+    """Score post-drop price action: is the stock stabilizing or still deteriorating?
+
+    Measures three components of post-drop price behavior:
+    - Stabilization: no new lows + bounce off 20-day low (0-6 pts)
+    - Short-MA reclaim: above SMA5/SMA10 (0-5 pts)
+    - Close-location strength: closes near daily highs (0-4 pts)
+
+    Total range: 0-15 points.
+    """
     notes = []
-    if trigger.ten_day_drawdown and trigger.ten_day_drawdown > 0:
-        score += min(5, int(trigger.ten_day_drawdown * 40))
-        notes.append("ten_day_drawdown")
-    if trigger.twenty_day_drawdown and trigger.twenty_day_drawdown > 0:
-        score += min(5, int(trigger.twenty_day_drawdown * 30))
-        notes.append("twenty_day_drawdown")
-    if trigger.relative_underperformance and trigger.relative_underperformance > 0:
-        score += min(3, int(trigger.relative_underperformance * 25))
-        notes.append("relative_underperformance")
-    if not trigger.new_low:
-        score += 2
-        notes.append("not_at_fresh_low")
+
+    # Defensive sort
+    bars = sorted(security_prices, key=lambda b: b.trading_date)
+
+    # Insufficient-data guard
+    if len(bars) < 21:
+        return BucketScore("price_flow", 0, 15, ["insufficient_price_history"])
+
+    latest = bars[-1]
+
+    # Component ① — Stabilization (0–6 points)
+    recent_min = min(b.close for b in bars[-3:])
+    prior_min = min(b.close for b in bars[-20:-3])
+
+    points_1a = 0
+    if recent_min >= prior_min:
+        points_1a = 3
+        notes.append("basing_no_new_lows")
+    else:
+        notes.append("still_making_lows")
+
+    # Bounce off 20-day low
+    window_min = min(b.close for b in bars[-20:])
+    if window_min <= 0:
+        bounce_pct = 0.0
+    else:
+        bounce_pct = (latest.close - window_min) / window_min
+
+    points_1b = min(3, max(0, round(bounce_pct * 60)))
+    notes.append(f"bounce_off_low_{bounce_pct*100:.1f}pct")
+
+    component1 = points_1a + points_1b
+
+    # Component ② — Short-MA reclaim (0–5 points)
+    sma5 = mean(b.close for b in bars[-5:])
+    sma10 = mean(b.close for b in bars[-10:])
+
+    points_2 = 0
+    if latest.close > sma5:
+        points_2 += 2
+        notes.append("above_sma5")
+    else:
+        notes.append("below_sma5")
+
+    if latest.close > sma10:
+        points_2 += 2
+        notes.append("above_sma10")
+    else:
+        notes.append("below_sma10")
+
+    if sma5 > sma10:
+        points_2 += 1
+        notes.append("sma5_above_sma10")
+
+    component2 = points_2
+
+    # Component ③ — Close-location strength (0–4 points)
+    close_locations = []
+    for b in bars[-5:]:
+        rng = b.high - b.low
+        cl = 0.5 if rng <= 0 else (b.close - b.low) / rng
+        close_locations.append(cl)
+
+    avg_cl = mean(close_locations)
+    points_3 = min(4, max(0, round((avg_cl - 0.3) * 10)))
+    notes.append(f"close_location_{avg_cl:.2f}")
+
+    component3 = points_3
+
+    # Final score
+    score = component1 + component2 + component3
     return BucketScore("price_flow", max(0, min(score, 15)), 15, notes)
 
 

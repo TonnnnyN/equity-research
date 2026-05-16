@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from unittest import TestCase
 
 from market_sentiment.models import (
@@ -11,12 +11,13 @@ from market_sentiment.models import (
     OfficialEvent,
     OptionContract,
     OptionSnapshot,
+    PriceBar,
     Security,
     SourceStatus,
     TriggerResult,
 )
 from market_sentiment.pipeline import dedupe_statuses
-from market_sentiment.scoring import build_scorecard, cap_state_if_data_insufficient
+from market_sentiment.scoring import build_scorecard, cap_state_if_data_insufficient, score_price_flow
 
 
 class ScoringTests(TestCase):
@@ -220,3 +221,114 @@ class ScoringTests(TestCase):
         result_state, insufficient = cap_state_if_data_insufficient(ActionState.STARTER, source_health)
         self.assertEqual(result_state, ActionState.WATCH)
         self.assertTrue(insufficient)
+
+
+def make_price_bars(ticker: str, closes: list[float], start_date: date | None = None) -> list[PriceBar]:
+    """Helper to construct PriceBar lists for testing."""
+    if start_date is None:
+        start_date = date(2026, 1, 1)
+    bars = []
+    for index, close in enumerate(closes):
+        bars.append(
+            PriceBar(
+                ticker=ticker,
+                trading_date=start_date + timedelta(days=index),
+                open=close,
+                high=close + 1,
+                low=close - 1,
+                close=close,
+                volume=1000.0 + index,
+                source="test",
+            )
+        )
+    return bars
+
+
+class PriceFlowTests(TestCase):
+    def test_price_flow_basing_stock_scores_high(self) -> None:
+        """Stock drops sharply, then forms a constructive base with closes near highs."""
+        # Drop from 100 to 85 in first 5 days, then base/recover with strong closes
+        closes = [
+            100, 98, 95, 90, 85,  # sharp drop (days 1-5)
+            86, 87, 86, 88, 87,   # start recovering
+            88, 89, 88, 90, 89,   # consolidate higher
+            91, 92, 90, 93, 91,   # continue recovery
+            94, 95, 93, 96, 95,   # reaches 95 (close to drop endpoint)
+        ]
+        bars = make_price_bars("TEST", closes)
+        result = score_price_flow(bars)
+
+        self.assertGreaterEqual(result.score, 10)
+        self.assertEqual(result.max_score, 15)
+        self.assertIn("basing_no_new_lows", result.notes)
+
+    def test_price_flow_falling_knife_scores_low(self) -> None:
+        """Stock in steady decline; closes near daily lows; below both SMAs."""
+        # Steady downtrend, each close near the day's low
+        closes = [
+            100, 99, 98, 97, 96,
+            95, 94, 93, 92, 91,
+            90, 89, 88, 87, 86,
+            85, 84, 83, 82, 81,
+            80, 79, 78, 77, 76,
+        ]
+        bars = make_price_bars("TEST", closes)
+        result = score_price_flow(bars)
+
+        self.assertLessEqual(result.score, 4)
+        self.assertEqual(result.max_score, 15)
+        self.assertIn("still_making_lows", result.notes)
+
+    def test_price_flow_insufficient_history(self) -> None:
+        """Fewer than 21 bars should return score 0 with insufficient_price_history note."""
+        closes = [100 - i for i in range(15)]  # Only 15 bars
+        bars = make_price_bars("TEST", closes)
+        result = score_price_flow(bars)
+
+        self.assertEqual(result.score, 0)
+        self.assertEqual(result.max_score, 15)
+        self.assertIn("insufficient_price_history", result.notes)
+
+    def test_price_flow_flat_day_neutral_close_location(self) -> None:
+        """A bar with high == low should not raise ZeroDivisionError; treats as 0.5."""
+        closes = [
+            100, 99, 98, 97, 96,
+            95, 94, 93, 92, 91,
+            90, 89, 88, 87, 86,
+            85, 84, 83, 82, 81,
+            82, 83, 84, 85, 84,  # last 5 bars
+        ]
+        bars = make_price_bars("TEST", closes)
+        # Modify the last bar to have high == low (flat day)
+        bars[-1] = PriceBar(
+            ticker="TEST",
+            trading_date=bars[-1].trading_date,
+            open=84.0,
+            high=84.0,  # high == low
+            low=84.0,
+            close=84.0,
+            volume=1000.0,
+            source="test",
+        )
+
+        # Should not raise ZeroDivisionError
+        result = score_price_flow(bars)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.max_score, 15)
+
+    def test_price_flow_score_bounded_0_to_15(self) -> None:
+        """Score should always be between 0 and 15."""
+        # Strongly constructive: stock stabilizes and recovers well
+        closes = [
+            100, 98, 95, 92, 88,  # drop 12%
+            88, 89, 89, 90, 90,   # stabilize
+            91, 92, 92, 93, 94,   # strong recovery
+            95, 96, 97, 98, 99,   # continue up
+            100, 101, 102, 101, 102,  # reach and exceed prior high
+        ]
+        bars = make_price_bars("TEST", closes)
+        result = score_price_flow(bars)
+
+        self.assertGreaterEqual(result.score, 0)
+        self.assertLessEqual(result.score, 15)
+        self.assertEqual(result.max_score, 15)
