@@ -191,3 +191,174 @@ class StorageTests(TestCase):
             self.assertEqual(result[2].close, 102.5)
             for bar in result:
                 self.assertIsInstance(bar, PriceBar)
+
+    def test_upsert_and_read_active_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            invalidate_conds = [{"metric": "price", "comparator": "<", "threshold": 95.0}]
+            rerate_conds = [{"metric": "volume", "comparator": ">", "threshold": 5000000}]
+
+            storage.upsert_active_decision(
+                ticker="AAPL",
+                decision_date="2026-05-16",
+                state="WATCH",
+                reference_close=150.0,
+                invalidate_conditions=invalidate_conds,
+                rerate_conditions=rerate_conds,
+                status="active",
+                status_reason=None,
+                last_checked_date=None,
+            )
+
+            decisions = storage.read_active_decisions()
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0]["ticker"], "AAPL")
+            self.assertEqual(decisions[0]["decision_date"], "2026-05-16")
+            self.assertEqual(decisions[0]["state"], "WATCH")
+            self.assertEqual(decisions[0]["reference_close"], 150.0)
+            self.assertEqual(decisions[0]["invalidate_conditions"], invalidate_conds)
+            self.assertEqual(decisions[0]["rerate_conditions"], rerate_conds)
+            self.assertEqual(decisions[0]["status"], "active")
+
+    def test_read_active_decisions_excludes_non_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            storage.upsert_active_decision(
+                ticker="AAPL",
+                decision_date="2026-05-16",
+                state="WATCH",
+                reference_close=150.0,
+                invalidate_conditions=[],
+                rerate_conditions=[],
+                status="active",
+            )
+
+            storage.upsert_active_decision(
+                ticker="MSFT",
+                decision_date="2026-05-16",
+                state="ADD",
+                reference_close=320.0,
+                invalidate_conditions=[],
+                rerate_conditions=[],
+                status="invalidated",
+                status_reason="Price fell below threshold",
+            )
+
+            decisions = storage.read_active_decisions()
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0]["ticker"], "AAPL")
+
+    def test_update_decision_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            storage.upsert_active_decision(
+                ticker="AAPL",
+                decision_date="2026-05-16",
+                state="WATCH",
+                reference_close=150.0,
+                invalidate_conditions=[],
+                rerate_conditions=[],
+                status="active",
+            )
+
+            storage.update_decision_status(
+                ticker="AAPL",
+                decision_date="2026-05-16",
+                status="invalidated",
+                status_reason="Price fell below support",
+                last_checked_date="2026-05-17",
+            )
+
+            decisions = storage.read_active_decisions()
+            self.assertEqual(len(decisions), 0)
+
+            all_decisions = storage.read_all_decisions_for_ticker("AAPL")
+            self.assertEqual(len(all_decisions), 1)
+            self.assertEqual(all_decisions[0]["status"], "invalidated")
+            self.assertEqual(all_decisions[0]["status_reason"], "Price fell below support")
+            self.assertEqual(all_decisions[0]["last_checked_date"], "2026-05-17")
+
+    def test_upsert_active_decision_replaces_on_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            storage.upsert_active_decision(
+                ticker="AAPL",
+                decision_date="2026-05-16",
+                state="WATCH",
+                reference_close=150.0,
+                invalidate_conditions=[],
+                rerate_conditions=[],
+                status="active",
+            )
+
+            storage.upsert_active_decision(
+                ticker="AAPL",
+                decision_date="2026-05-16",
+                state="ADD",
+                reference_close=155.0,
+                invalidate_conditions=[{"metric": "rsi", "comparator": "<", "threshold": 30}],
+                rerate_conditions=[],
+                status="active",
+            )
+
+            with sqlite3.connect(storage.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT COUNT(*) FROM active_decisions WHERE ticker = ? AND decision_date = ?",
+                    ("AAPL", "2026-05-16"),
+                ).fetchone()
+                self.assertEqual(rows[0], 1)
+
+            decisions = storage.read_active_decisions()
+            self.assertEqual(len(decisions), 1)
+            self.assertEqual(decisions[0]["state"], "ADD")
+            self.assertEqual(decisions[0]["reference_close"], 155.0)
+            self.assertEqual(len(decisions[0]["invalidate_conditions"]), 1)
+
+    def test_condition_blobs_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            complex_invalidate = [
+                {"metric": "price", "comparator": "<", "threshold": 95.0, "duration_days": 3},
+                {"metric": "volume", "comparator": "<", "threshold": 1000000, "consecutive": True},
+            ]
+            complex_rerate = [
+                {
+                    "metric": "earnings_surprise",
+                    "comparator": ">",
+                    "threshold": 10,
+                    "lookback_periods": 2,
+                    "conditions": ["guidance_raised", "beat_expectations"],
+                },
+            ]
+
+            storage.upsert_active_decision(
+                ticker="GOOG",
+                decision_date="2026-05-16",
+                state="STARTER",
+                reference_close=175.0,
+                invalidate_conditions=complex_invalidate,
+                rerate_conditions=complex_rerate,
+            )
+
+            all_decisions = storage.read_all_decisions_for_ticker("GOOG")
+            self.assertEqual(len(all_decisions), 1)
+            decision = all_decisions[0]
+
+            self.assertEqual(decision["invalidate_conditions"], complex_invalidate)
+            self.assertEqual(decision["rerate_conditions"], complex_rerate)
+            self.assertEqual(decision["state"], "STARTER")

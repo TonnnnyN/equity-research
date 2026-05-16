@@ -174,6 +174,20 @@ CREATE TABLE IF NOT EXISTS filing_summary_cache (
 
 CREATE INDEX IF NOT EXISTS idx_filing_summary_cache_ticker_form_type
   ON filing_summary_cache(ticker, form_type);
+
+CREATE TABLE IF NOT EXISTS active_decisions (
+    ticker TEXT NOT NULL,
+    decision_date TEXT NOT NULL,
+    state TEXT NOT NULL,
+    reference_close REAL NOT NULL,
+    invalidate_conditions TEXT NOT NULL,
+    rerate_conditions TEXT NOT NULL,
+    status TEXT NOT NULL,
+    status_reason TEXT,
+    last_checked_date TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (ticker, decision_date)
+);
 """
 
 
@@ -537,6 +551,116 @@ class Storage:
             conn.commit()
             return rowcount
 
+    def upsert_active_decision(
+        self,
+        *,
+        ticker: str,
+        decision_date: str,
+        state: str,
+        reference_close: float,
+        invalidate_conditions: list,
+        rerate_conditions: list,
+        status: str = "active",
+        status_reason: str | None = None,
+        last_checked_date: str | None = None,
+    ) -> None:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO active_decisions
+                (ticker, decision_date, state, reference_close, invalidate_conditions,
+                 rerate_conditions, status, status_reason, last_checked_date, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ticker,
+                    decision_date,
+                    state,
+                    reference_close,
+                    json.dumps(invalidate_conditions, sort_keys=True),
+                    json.dumps(rerate_conditions, sort_keys=True),
+                    status,
+                    status_reason,
+                    last_checked_date,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+
+    def read_active_decisions(self) -> list[dict]:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker, decision_date, state, reference_close, invalidate_conditions,
+                       rerate_conditions, status, status_reason, last_checked_date, created_at
+                FROM active_decisions
+                WHERE status = 'active'
+                """
+            ).fetchall()
+        return [
+            {
+                "ticker": row[0],
+                "decision_date": row[1],
+                "state": row[2],
+                "reference_close": row[3],
+                "invalidate_conditions": json.loads(row[4]),
+                "rerate_conditions": json.loads(row[5]),
+                "status": row[6],
+                "status_reason": row[7],
+                "last_checked_date": row[8],
+                "created_at": row[9],
+            }
+            for row in rows
+        ]
+
+    def read_all_decisions_for_ticker(self, ticker: str) -> list[dict]:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker, decision_date, state, reference_close, invalidate_conditions,
+                       rerate_conditions, status, status_reason, last_checked_date, created_at
+                FROM active_decisions
+                WHERE ticker = ?
+                ORDER BY decision_date DESC
+                """,
+                (ticker,),
+            ).fetchall()
+        return [
+            {
+                "ticker": row[0],
+                "decision_date": row[1],
+                "state": row[2],
+                "reference_close": row[3],
+                "invalidate_conditions": json.loads(row[4]),
+                "rerate_conditions": json.loads(row[5]),
+                "status": row[6],
+                "status_reason": row[7],
+                "last_checked_date": row[8],
+                "created_at": row[9],
+            }
+            for row in rows
+        ]
+
+    def update_decision_status(
+        self,
+        *,
+        ticker: str,
+        decision_date: str,
+        status: str,
+        status_reason: str | None,
+        last_checked_date: str,
+    ) -> None:
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                UPDATE active_decisions
+                SET status = ?, status_reason = ?, last_checked_date = ?
+                WHERE ticker = ? AND decision_date = ?
+                """,
+                (status, status_reason, last_checked_date, ticker, decision_date),
+            )
+            conn.commit()
+
     def save_review_packets(self, run_date: date, packets: dict[str, dict]) -> list[Path]:
         packet_dir = self.data_dir / "reports" / run_date.isoformat() / "review_packets"
         packet_dir.mkdir(parents=True, exist_ok=True)
@@ -640,6 +764,14 @@ class Storage:
             summary.deleted_db_rows["social_snapshots"] = conn.execute(
                 "DELETE FROM social_snapshots WHERE run_date < ?",
                 (social_snapshot_cutoff,),
+            ).rowcount
+            decision_cutoff = _cutoff_date(reference_date, 180).isoformat()
+            summary.deleted_db_rows["active_decisions"] = conn.execute(
+                """
+                DELETE FROM active_decisions
+                WHERE status != 'active' AND created_at < ?
+                """,
+                (decision_cutoff,),
             ).rowcount
             conn.commit()
 
