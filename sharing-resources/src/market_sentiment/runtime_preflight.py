@@ -265,7 +265,37 @@ def build_preflight_summary(config: ProjectConfig) -> PreflightSummary:
     checks.extend(_build_x_checks(config))
     checks.extend(_build_social_provider_check(config))
     checks.extend(_build_options_checks(config))
+    checks.extend(_build_analyst_targets_checks())
     return PreflightSummary(checks=checks)
+
+
+def _build_analyst_targets_checks() -> list[PreflightCheck]:
+    """Emit a non-blocking WARN if FINNHUB_API_KEY is unset.
+
+    The analyst-targets lane works fine on US tickers via Yahoo Finance alone;
+    Finnhub is only needed as a fallback for non-US tickers or Yahoo outages.
+    """
+    api_key = os.environ.get("FINNHUB_API_KEY")
+    if api_key and len(api_key) > 5:
+        return [
+            PreflightCheck(
+                "API key: FINNHUB_API_KEY",
+                True,
+                f"configured (length {len(api_key)}); analyst-targets Finnhub fallback available",
+                blocking=False,
+            )
+        ]
+    return [
+        PreflightCheck(
+            "API key: FINNHUB_API_KEY",
+            False,
+            (
+                "FINNHUB_API_KEY unset; analyst-targets lane will rely on Yahoo only "
+                "(fine for US tickers)"
+            ),
+            blocking=False,
+        )
+    ]
 
 
 def _build_x_checks(config: ProjectConfig) -> list[PreflightCheck]:

@@ -442,6 +442,37 @@ orchestrator 用真凭证探了 Tiger SDK 所有相关接口:
 
 ---
 
+### 0.19 分析师目标价 / 评级动量数据源接入(2026-05-17)
+
+#### 0.19.1 本轮工作概述
+
+本轮新增了**分析师目标价 + 评级升降级动量**数据 lane，作为 Layer 2 仅供参考的附加证据接入 market-sentiment-research pipeline。数据内容：机构共识目标价（level 信号——隐含相对当前价格的上行空间）+ 近期升降级动量（trend 信号）。
+
+**关键设计原则**：该 lane **不进入** 6 维度打分体系，不创建 veto，不标记 `partial_coverage`，仅序列化进 review packet 供 Agent 参考推理。原因：分析师目标价属于滞后信号且存在跟风效应，优先级低于 SEC 披露和一手财务数据（source priority 第 4 位），强行纳入评分会干扰基于一手证据的确定性逻辑。
+
+#### 0.19.2 新增文件
+
+- `sharing-resources/src/market_sentiment/sources/analyst_targets.py`：新数据源模块，类 `AnalystTargetsClient`，核心方法 `fetch_analyst_snapshot(ticker, run_date)`。
+  - **主数据源**：Yahoo `quoteSummary` 端点（`query2.finance.yahoo.com/v10/finance/quoteSummary`，modules `financialData,recommendationTrend,upgradeDowngradeHistory`），无需 API key，与 earnings-calendar lane 复用同一已验证端点。
+  - **备用数据源**：Finnhub API（`/stock/price-target`、`/stock/recommendation`、`/stock/upgrade-downgrade`），仅在 Yahoo 失败/空且环境变量 `FINNHUB_API_KEY` 已设置时启用；`FINNHUB_API_KEY` 为**可选**，不设置时 US 股票依赖 Yahoo 即可正常运行。
+  - 数据模型：`AnalystSnapshot`（目标价汇总）+ `AnalystRatingChange`（单条升降级记录）。
+- `sharing-resources/tests/test_analyst_targets.py`：16 个新增单测，覆盖 Yahoo 主路径、Finnhub fallback、两者均失败的降级处理。**全套测试 263 → 279，全绿**。
+
+#### 0.19.3 改动的文件
+
+- `sharing-resources/src/market_sentiment/pipeline.py`：将 analyst_targets lane 以非阻塞 enrichment 方式接入（仅对触发票拉取，包在 try/except 内，与 earnings-calendar lane 模式一致）。`SourceStatus.source` 字符串为 `"analyst_targets"`。
+- `sharing-resources/src/market_sentiment/runtime_preflight.py`：`FINNHUB_API_KEY` 未设置时发出 `[WARN]`（非 `[FAIL]`），属信息性提示，不阻断 pipeline 启动。
+- review packet 新增顶层字段 `analyst_summary`（与 `macro_summary` 并列放在 Layer 2 证据区），字段含：`source, target_mean, target_high, target_low, target_median, current_price, implied_upside, number_of_analysts, recommendation_key, recommendation_mean, trend, recent_changes`；`recent_changes` 每条含 `firm, date, action, from_grade, to_grade`。
+
+#### 0.19.4 设计取舍
+
+- **不进打分**：分析师共识价属于 source priority 4，低于 SEC 披露（1）和财报数字（2）；目标价常滞后并有跟风效应，若纳入 6 维度打分反而会掩盖一手证据的信号。仅作为 Layer 2 参考注记，由 Agent 在最终叙事层面自行权衡。
+- **Yahoo 优先，Finnhub 可选**：Yahoo quoteSummary 对美股覆盖率高、无需 key，与现有 earnings-calendar 端点同源，维护成本低。Finnhub 仅作 fallback，避免强依赖付费 key。
+- **非美股（如 .HK）两者可能皆空**：已在文档中说明 web-search fallback 流程（Agent 自行搜索 TipRanks / MarketBeat 等聚合器补充，并标注为 web-sourced 低置信度数据）。
+- **非阻塞设计**：lane 失败仅记录在 `source_health`，不影响主流程的打分和报告生成。
+
+---
+
 ### 0.8 真实状态盘点 + 下一步路线(2026-05-14)
 
 #### 0.8.1 状态澄清:"代码到位" ≠ "端到端跑通"
@@ -951,6 +982,7 @@ orchestrator(我)→ Haiku subagent 矩阵:
    ├─ 宏观利率   → FRED（DGS10 / DFF）
    ├─ 能源价格   → EIA（天然气，可选）
    ├─ 社交情绪   → Reddit + Discourse + X（均可按配置开关）
+   ├─ 分析师目标价 → Yahoo quoteSummary / Finnhub（触发票，非阻塞，→ analyst_summary）
    └─ 期权数据   → Alpha Vantage 期权链（默认 disabled，max_contracts=80）
    ▼
 ③ 事件标签（scoring.classify_event_tag）
@@ -981,6 +1013,7 @@ orchestrator(我)→ Haiku subagent 矩阵:
 | Discourse | 社交情绪（可选论坛） | 社交辅助 | base_url 配置失误会静默 skip |
 | X/Twitter（twscrape / twikit） | 社交情绪 | 社交辅助，**默认 disabled** | 需账号/cookies，国内受限 |
 | Alpha Vantage 期权链 | 期权 put/call 比率 | 辅助确认，**默认 disabled** | 占 Alpha Vantage 25 次配额 |
+| Yahoo quoteSummary（分析师）/ Finnhub | 分析师目标价 + 评级升降级动量（Layer 2 仅供参考，不进打分） | Yahoo 主 / Finnhub 备 | Finnhub 需可选 key；非美股可能两者皆空 |
 
 ---
 

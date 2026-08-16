@@ -77,6 +77,7 @@ def build_review_packet(
             "fundamentals_snapshot": _serialize_fundamentals(context.fundamentals),
             "option_summary": _serialize_option_snapshot(getattr(context, "options_snapshot", None)),
             "social_summary": _serialize_social_summary(context),
+            "analyst_summary": _serialize_analyst_summary(context),
             "macro_summary": macro_summary,
             "source_health": [_serialize(asdict(status)) for status in context.source_statuses],
             "social_source_health": [_serialize(asdict(status)) for status in getattr(context, "social_source_statuses", [])],
@@ -230,6 +231,46 @@ def _serialize_option_snapshot(snapshot: OptionSnapshot | None) -> dict[str, Any
     if snapshot is None:
         return None
     return _serialize(asdict(snapshot))
+
+
+def _serialize_analyst_summary(context: PipelineContext) -> dict[str, Any] | None:
+    """Serialize analyst price targets and rating momentum for the review packet.
+
+    This is Layer 2 advisory evidence only — it must NOT enter the scoring system.
+    Returns None when no snapshot is available.
+    """
+    snapshot = getattr(context, "analyst_snapshot", None)
+    if snapshot is None:
+        return None
+
+    recent_changes_out = []
+    for change in snapshot.recent_changes[:8]:
+        recent_changes_out.append(
+            {
+                "firm": change.firm,
+                "date": change.change_date.isoformat() if change.change_date is not None else None,
+                "action": change.action,
+                "from_grade": change.from_grade,
+                "to_grade": change.to_grade,
+            }
+        )
+
+    return _serialize(
+        {
+            "source": snapshot.source,
+            "target_mean": snapshot.target_mean,
+            "target_high": snapshot.target_high,
+            "target_low": snapshot.target_low,
+            "target_median": snapshot.target_median,
+            "current_price": snapshot.current_price,
+            "implied_upside": snapshot.implied_upside,
+            "number_of_analysts": snapshot.number_of_analysts,
+            "recommendation_key": snapshot.recommendation_key,
+            "recommendation_mean": snapshot.recommendation_mean,
+            "trend": snapshot.trend[:2],
+            "recent_changes": recent_changes_out,
+        }
+    )
 
 
 def _summarize_macro(observations: list[MacroObservation]) -> dict[str, Any]:

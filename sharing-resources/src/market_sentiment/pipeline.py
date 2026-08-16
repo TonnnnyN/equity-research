@@ -12,11 +12,13 @@ from market_sentiment.manual_agent_report import render_manual_agent_report
 from market_sentiment.models import (
     DailyRunReport,
     FundamentalSnapshot,
+    Layer,
     MacroObservation,
     OptionSnapshot,
     OfficialEvent,
     PipelineContext,
     PriceBar,
+    Security,
     SourceStatus,
 )
 from market_sentiment.review_packets import build_review_packet
@@ -26,6 +28,7 @@ from market_sentiment.social_service import SocialSignalService
 from market_sentiment.subagent_sentiment import build_default_sentiment_judge
 from market_sentiment.sources.alpha_vantage import AlphaVantageClient
 from market_sentiment.sources.base import SourcePayload
+from market_sentiment.sources.analyst_targets import AnalystTargetsClient
 from market_sentiment.sources.earnings_calendar import EarningsCalendarClient
 from market_sentiment.sources.eia import EiaClient
 from market_sentiment.sources.options_alpha_vantage import AlphaVantageOptionsClient
@@ -61,6 +64,7 @@ class DailyPipeline:
         self.fred = FredClient(self.http, self.storage)
         self.eia = EiaClient(self.http, self.storage)
         self.earnings_calendar = EarningsCalendarClient(self.http, self.storage)
+        self.analyst_targets = AnalystTargetsClient(self.http, self.storage)
         self.options = AlphaVantageOptionsClient(self.http, self.storage, self.config.options)
         self.social = SocialSignalService(
             config=self.config,
@@ -267,6 +271,19 @@ class DailyPipeline:
                     "yahoo_earnings_calendar", f"Failed to fetch earnings calendar for {context.security.ticker}: {exc}"
                 )
                 all_statuses.append(failure_status)
+            # Fetch analyst price targets & rating momentum — Layer 2 advisory evidence ONLY.
+            # MUST NOT block the pipeline, MUST NOT affect scores, MUST NOT mark partial_coverage.
+            # Add status to all_statuses for reporting only, NOT to context.source_statuses.
+            try:
+                analyst_payload = self.analyst_targets.fetch_analyst_snapshot(context.security.ticker, run_date)
+                context.analyst_snapshot = analyst_payload.data
+                all_statuses.append(analyst_payload.status)
+            except Exception as exc:
+                context.analyst_snapshot = None
+                failure_status = self._failure_status(
+                    "analyst_targets", f"Failed to fetch analyst targets for {context.security.ticker}: {exc}"
+                )
+                all_statuses.append(failure_status)
             peer_contexts = layer_peers[context.security.layer]
             event_tag = classify_event_tag(context, peer_contexts)
             scorecard = build_scorecard(
@@ -457,6 +474,127 @@ class DailyPipeline:
         if any(value > run_date for value in dated_fields):
             return None
         return snapshot
+
+    def review_single(
+        self,
+        ticker: str,
+        *,
+        benchmark: str,
+        layer: Layer,
+        run_date: date,
+        name: str | None = None,
+    ) -> dict:
+        """Run the price/SEC/macro/social lanes for one ad-hoc ticker and return a review packet dict.
+
+        The ticker does not need to be in watchlist.toml.  This is used by the
+        us-smallmid-dislocation skill to perform a deep-review pass on candidates that
+        already triggered in stage 1.  A review packet is always returned even when
+        ``compute_trigger`` reports ``triggered=False`` — the upstream triggering has
+        already been done, and we need the full evidence set regardless.
+        """
+        self.storage.init_db()
+        decision_time = datetime.now(timezone.utc)
+
+        # Build a transient Security for this ad-hoc ticker.
+        security = Security(
+            ticker=ticker,
+            name=name or ticker,
+            layer=layer,
+            benchmark=benchmark,
+        )
+
+        # --- Price lane ---
+        prices_payload, price_statuses = self._fetch_prices_with_fallback(ticker, run_date)
+        prices = self._filter_prices_as_of(prices_payload.data, run_date)
+
+        # --- Benchmark prices ---
+        benchmark_payload, benchmark_price_statuses = self._fetch_prices_with_fallback(benchmark, run_date)
+        benchmark_prices = self._filter_prices_as_of(benchmark_payload.data, run_date)
+
+        # --- SEC events lane ---
+        events_payload = self._fetch_events_with_recovery(ticker, run_date)
+        events = self._filter_events_as_of(events_payload.data, run_date)
+
+        # --- SEC companyfacts lane ---
+        companyfacts_payload = self._fetch_companyfacts_with_recovery(ticker, run_date)
+        companyfacts = self._filter_fundamentals_as_of(companyfacts_payload.data, run_date)
+
+        # --- Macro lane ---
+        macro_data, macro_statuses = self._fetch_macro(run_date)
+
+        source_statuses = [
+            *benchmark_price_statuses,
+            *price_statuses,
+            events_payload.status,
+            companyfacts_payload.status,
+            *macro_statuses,
+        ]
+
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker=benchmark,
+            prices=prices,
+            benchmark_prices=benchmark_prices,
+            official_events=events,
+            fundamentals=companyfacts,
+            macro=macro_data,
+            source_statuses=source_statuses,
+        )
+
+        # --- Social lane (always attempted, graceful if disabled or fails) ---
+        try:
+            social_collection = self.social.collect(context, run_date)
+            context.social_source_statuses = social_collection.statuses
+            context.social_snapshot = social_collection.snapshot
+            context.social_posts_sample = social_collection.posts
+        except Exception as exc:
+            context.social_source_statuses = [
+                self._failure_status("social", f"Social lane failed for {ticker}: {exc}")
+            ]
+
+        # --- Options lane (only if enabled) ---
+        if self.config.options.enabled:
+            try:
+                options_payload = self._fetch_options_with_recovery(ticker, run_date)
+                context.options_snapshot = options_payload.data
+                context.options_source_statuses = [options_payload.status]
+            except Exception as exc:
+                context.options_source_statuses = [
+                    self._failure_status("alpha_vantage_options", f"Options lane failed for {ticker}: {exc}")
+                ]
+
+        # --- Earnings calendar (non-blocking) ---
+        try:
+            earnings_payload = self.earnings_calendar.fetch_next_earnings(ticker, run_date)
+            context.earnings_calendar = earnings_payload.data
+        except Exception:
+            context.earnings_calendar = None
+
+        # --- Analyst price targets & rating momentum (non-blocking, Layer 2 advisory only) ---
+        try:
+            analyst_payload = self.analyst_targets.fetch_analyst_snapshot(ticker, run_date)
+            context.analyst_snapshot = analyst_payload.data
+        except Exception:
+            context.analyst_snapshot = None
+
+        # --- Trigger / scorecard ---
+        threshold = self.config.thresholds.get(layer)
+        if threshold is None:
+            # Fall back to first available threshold when the layer has no config entry.
+            threshold = next(iter(self.config.thresholds.values()))
+
+        trigger = compute_trigger(context.prices, context.benchmark_prices, threshold)
+        event_tag = classify_event_tag(context, [])
+        scorecard = build_scorecard(
+            run_date=run_date,
+            context=context,
+            trigger=trigger,
+            event_tag=event_tag,
+            peer_contexts=[],
+        )
+
+        # Build and return packet regardless of triggered state.
+        return build_review_packet(decision_time, context, scorecard)
 
     @staticmethod
     def _failure_status(source: str, message: str) -> SourceStatus:

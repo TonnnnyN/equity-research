@@ -55,6 +55,20 @@ min_runway_months = 12
 max_share_count_growth_yoy = 0.08
 max_working_capital_release_ratio = 0.50
 
+[build_universe]
+# Seed source: SEC full-market ticker list (no API key required).
+# build_universe.py fetches this URL when no --seed-file is provided.
+sec_seed_url = "https://www.sec.gov/files/company_tickers_exchange.json"
+
+# Local cache directory for per-ticker fetch results.
+# Relative to repository root. build_universe.py creates this directory if absent.
+# Reruns skip tickers whose cache file already exists under this path.
+cache_dir = "data/state/universe_cache"
+
+# Default output directory for the assembled universe CSV.
+# Filename will be universe_<date>.csv unless --output overrides it.
+output_dir = "data/universe"
+
 [notes]
 universe_goal = "Approximate a broad Russell-like small/mid-cap opportunity set without requiring paid membership data."
 count_rule = "Do not force an exact 2800-name result. Use the count as a practical target after hygiene filters."

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime
+import json
 import sys
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from market_sentiment.config import load_config
 from market_sentiment.email_delivery import send_report_email
+from market_sentiment.models import Layer
 from market_sentiment.pipeline import DailyPipeline
 
 
@@ -46,6 +49,40 @@ def build_parser() -> argparse.ArgumentParser:
         dest="run_date",
         help="Reference date in YYYY-MM-DD format. Defaults to today in the configured timezone.",
     )
+
+    review_ticker = subparsers.add_parser(
+        "review-ticker",
+        help="Run a deep-review pass on a single ad-hoc ticker and emit a review packet.",
+    )
+    review_ticker.add_argument(
+        "ticker",
+        help="The ticker symbol to review (e.g. ACMR, IRTC).",
+    )
+    review_ticker.add_argument(
+        "--benchmark",
+        dest="benchmark",
+        default="IWM",
+        help="Benchmark ticker for relative performance calculation (default: IWM).",
+    )
+    review_ticker.add_argument(
+        "--layer",
+        dest="layer",
+        default="ai_applications",
+        choices=[layer.value for layer in Layer],
+        help="Layer to use when looking up trigger thresholds (default: ai_applications).",
+    )
+    review_ticker.add_argument(
+        "--date",
+        dest="run_date",
+        help="Run date in YYYY-MM-DD format. Defaults to today.",
+    )
+    review_ticker.add_argument(
+        "--name",
+        dest="name",
+        default=None,
+        help="Optional human-readable company name.",
+    )
+
     return parser
 
 
@@ -118,6 +155,27 @@ def main(argv: list[str] | None = None) -> int:
             social_snapshot_days=retention.social_snapshot_days,
         )
         print("\n".join(summary.to_lines()))
+        return 0
+
+    if args.command == "review-ticker":
+        ticker = args.ticker.upper()
+        layer = Layer(args.layer)
+        packet = pipeline.review_single(
+            ticker,
+            benchmark=args.benchmark.upper(),
+            layer=layer,
+            run_date=run_date,
+            name=getattr(args, "name", None),
+        )
+        packet_json = json.dumps(packet, indent=2, sort_keys=True)
+        print(packet_json)
+
+        # Write to disk alongside daily review packets.
+        out_dir = pipeline.storage.data_dir / "reports" / run_date.isoformat() / "review_packets"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{ticker}.json"
+        out_path.write_text(packet_json, encoding="utf-8")
+        print(f"\n[review-ticker] packet saved to {out_path}", file=sys.stderr)
         return 0
 
     parser.error(f"Unknown command: {args.command}")

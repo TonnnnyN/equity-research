@@ -28,6 +28,7 @@
 - **官方披露**：SEC EDGAR 的财报、filing、财务数字
 - **宏观**：FRED 利率数据
 - **社交**：Reddit 等平台的讨论，先用 DeepSeek 把每条帖子压成「看多/看空/中性 + 摘要」
+- **分析师参考**：Yahoo quoteSummary 拉取机构共识目标价和近期升降级记录，作为仅供参考的附加证据（不进打分体系）
 
 整理完后输出两样东西：一份给人看的中文日终报告，和一份给 Agent 用的结构化证据包。Agent 读完证据后，给出五种动作之一：`Reject`（不用管）/ `Watch`（观望）/ `Starter`（建小仓）/ `Add`（加仓）/ `Exit`（减仓）。
 
@@ -116,6 +117,7 @@ After each daily run, the pipeline checks every watchlist ticker for an abnormal
 - **Official disclosures**: SEC EDGAR filings, financials, company facts
 - **Macro**: FRED interest-rate data
 - **Social**: Reddit and similar — each post first compressed by DeepSeek into bull/bear/neutral + a summary
+- **Analyst context**: Yahoo `quoteSummary` pulls institutional consensus price targets and recent upgrade/downgrade activity as advisory-only evidence (not factored into the scoring system)
 
 The result is two outputs: a human-readable Chinese end-of-day report, and a structured evidence packet for the Agent. After reading the evidence, the Agent picks one of five actions: `Reject` / `Watch` / `Starter` / `Add` / `Exit`.
 

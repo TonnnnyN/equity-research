@@ -29,3 +29,9 @@ sharing-resources/src/*.egg-info/
 
 # macOS/editor artifacts
 .DS_Store
+
+# Claude Code agent worktrees/scratch
+.claude/
+
+# Unrelated skill with 96MB of image assets — kept on disk, out of git
+skills/ppt-master/

@@ -51,7 +51,11 @@ Rules:
 Review packets contain two layers:
 
 - **Layer 1 (advisory only)**: `bucket_scores`, `rule_engine_precheck`, `decision_summary`. These come from a deterministic Python rule engine. Treat them as a quick sanity check, not as a conclusion.
-- **Layer 2 (your evidence base)**: `price_context` (recent ~90 trading days of security and benchmark bars), `fundamentals_snapshot`, `official_events`, `social_summary`, `macro_summary`, `source_health`. These are the raw inputs you must reason over.
+- **Layer 2 (your evidence base)**: `price_context` (recent ~90 trading days of security and benchmark bars), `fundamentals_snapshot`, `official_events`, `social_summary`, `macro_summary`, `analyst_summary` (analyst consensus target price + recent upgrade/downgrade history), `source_health`. These are the raw inputs you must reason over.
+
+**Using `analyst_summary`**: This field is advisory commentary, not primary evidence. Per source priority it sits below SEC filings and fundamentals. Treat `implied_upside` (consensus target vs current price) as a context check on valuation — not a buy/sell signal. Treat `recent_changes` (upgrade/downgrade momentum from `firm`, `date`, `action`, `from_grade`, `to_grade`) as a soft confirmation or divergence signal for the catalyst path. Analyst targets are lagging and subject to herding; they must never override a primary disclosure and must not by themselves move an action up to `Starter` or `Add`.
+
+**Web-search fallback when `analyst_summary` is missing or empty**: Both Yahoo and Finnhub may fail for non-US or `.HK` tickers, leaving the field absent or with null values. In that case, do a WebSearch for the ticker's analyst consensus (e.g. query `"<TICKER> analyst price target consensus"`), checking reputable aggregators such as TipRanks, MarketBeat, or Yahoo Finance. Summarize consensus target and recent rating actions in the report's evidence section, and clearly label it as web-sourced (lower confidence, not reproducible from the pipeline) rather than pipeline data. This is a fallback path, not the main evidence lane.
 
 Independent scoring is mandatory:
 
@@ -100,6 +104,7 @@ If Tiger returns an empty DataFrame for a `.HK` ticker, the account does not hav
 - `SEC_USER_AGENT` — required. Format: `"YourName email@example.com"`. SEC blocks anonymous traffic.
 - `DEEPSEEK_API_KEY` — required for social sentiment judging. Model defaults to `deepseek-v4-flash` with `thinking={type:disabled}` already baked in.
 - `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` — **NOT required** for the public `search.json` path the project uses. If preflight WARNs about them, that warning is informational; social posts will still be fetched.
+- `FINNHUB_API_KEY` — **OPTIONAL** (non-blocking). Free key from `finnhub.io`. Used only as a fallback for the analyst-targets lane when the primary Yahoo `quoteSummary` endpoint fails or returns empty. Without it, US tickers still work fine via Yahoo. Preflight emits a `[WARN]` (not `[FAIL]`) when this key is unset; that warning is purely informational.
 
 ### Price fallback chain — how to read it
 

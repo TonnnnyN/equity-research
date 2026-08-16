@@ -324,6 +324,33 @@ class EarningsCalendar:
 
 
 @dataclass(slots=True)
+class AnalystRatingChange:
+    firm: str
+    change_date: date | None
+    action: str          # e.g. "up", "down", "init", "main", "reit"
+    from_grade: str
+    to_grade: str
+
+
+@dataclass(slots=True)
+class AnalystSnapshot:
+    ticker: str
+    fetched_at: datetime
+    source: str                              # "yahoo_quote_summary" or "finnhub"
+    target_mean: float | None = None
+    target_high: float | None = None
+    target_low: float | None = None
+    target_median: float | None = None
+    current_price: float | None = None
+    implied_upside: float | None = None      # (target_mean - current_price)/current_price
+    number_of_analysts: int | None = None
+    recommendation_key: str | None = None    # buy/hold/sell/strong_buy/...
+    recommendation_mean: float | None = None # 1=strong buy ... 5=sell
+    trend: list[dict] = field(default_factory=list)         # recommendationTrend monthly counts
+    recent_changes: list[AnalystRatingChange] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class PipelineContext:
     security: Security
     benchmark_ticker: str
@@ -339,6 +366,7 @@ class PipelineContext:
     options_snapshot: OptionSnapshot | None = None
     options_source_statuses: list[SourceStatus] = field(default_factory=list)
     earnings_calendar: EarningsCalendar | None = None
+    analyst_snapshot: AnalystSnapshot | None = None
 
 
 @dataclass(slots=True)

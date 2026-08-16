@@ -27,7 +27,7 @@ Core rules:
 1. SEC filings, IR materials, earnings releases
 2. Operating data, regulated disclosures, primary corporate documents
 3. Reputable financial news and industry reporting
-4. Valuation aggregators, analyst estimates, EPS revisions
+4. Valuation aggregators, analyst estimates, EPS revisions — analyst consensus targets and recent rating changes now arrive via the `analyst_summary` packet field; this priority-4 evidence must not overrule priority 1–3 (SEC filings, operating data, reputable news) without a stated reason
 5. Positioning data, insider activity, options data
 6. Macro and commodity context
 7. Social media, forums, and general web chatter
@@ -40,12 +40,14 @@ Use these lanes for full reviews:
 
 - price and technical context
 - official disclosures
-- fundamentals, valuation, revisions, and peer comparison
+- fundamentals, valuation, revisions, and peer comparison (including analyst consensus target price and upgrade/downgrade momentum from the `analyst_summary` packet field)
 - positioning and flow
 - catalyst path
 - bear check
 
 Keep the final action on the orchestrator side. Sub-agents may summarize raw filings, broad news scans, social scans, and peer data, but the final synthesis should not be delegated.
+
+**Analyst-summary web-search fallback**: When `analyst_summary` is absent or empty in the review packet (both Yahoo and Finnhub failed — common for non-US / `.HK` tickers), do a WebSearch for the ticker's analyst consensus (e.g. `"<TICKER> analyst price target consensus"`). Pull consensus target and recent rating actions from reputable aggregators (TipRanks, MarketBeat, Yahoo Finance), include them in the evidence section, and label them as web-sourced. This is lower-confidence supplemental data, not pipeline-grade evidence.
 
 ## Event Calendar Precheck
 
