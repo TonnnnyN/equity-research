@@ -2,13 +2,12 @@
 
 ## Top-Level Shape
 
-This project is organized as two sibling Agent Skills plus a shared resource area.
+This project is organized as one Agent Skill plus a shared resource area.
 
 ```text
 市场情绪/
   skills/
     market-sentiment-research/
-    us-smallmid-dislocation/
   sharing-resources/
     docs/
     references/
@@ -24,11 +23,9 @@ This project is organized as two sibling Agent Skills plus a shared resource are
 
 ## Boundaries
 
-Each `skills/<name>/SKILL.md` is the agent-facing entry point for one workflow. The two Skills should not share action labels or decision rules.
+Each `skills/<name>/SKILL.md` is the agent-facing entry point for one workflow.
 
 `skills/market-sentiment-research/` owns single-name or short-list pullback research, target-pool defaults, price-cache refresh, and `Reject / Watch / Starter / Add / Exit` decisions.
-
-`skills/us-smallmid-dislocation/` owns prepared-universe candidate screening, small/mid defaults, red flags, thresholds, and `Pass / Watchlist / Investigate` states.
 
 `sharing-resources/src/market_sentiment/` is the runtime engine. It owns CLI parsing, config loading, source clients, pipeline orchestration, scoring, report generation, review packet generation, storage, and preflight checks.
 

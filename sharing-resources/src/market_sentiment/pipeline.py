@@ -486,9 +486,9 @@ class DailyPipeline:
     ) -> dict:
         """Run the price/SEC/macro/social lanes for one ad-hoc ticker and return a review packet dict.
 
-        The ticker does not need to be in watchlist.toml.  This is used by the
-        us-smallmid-dislocation skill to perform a deep-review pass on candidates that
-        already triggered in stage 1.  A review packet is always returned even when
+        The ticker does not need to be in watchlist.toml.  This is the on-demand
+        single-ticker path: pull the full evidence set for any ticker without
+        waiting for a daily run.  A review packet is always returned even when
         ``compute_trigger`` reports ``triggered=False`` — the upstream triggering has
         already been done, and we need the full evidence set regardless.
         """

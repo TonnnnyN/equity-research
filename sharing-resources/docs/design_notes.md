@@ -18,13 +18,9 @@ Both need shared runtime infrastructure, but they should not collapse into one S
 - Skill references should explain judgment-heavy decisions.
 - Secrets and generated data should stay out of Git.
 
-## Why Two Skills
+## Scope
 
 `market-sentiment-research` is a research-decision workflow. It can end with `Reject`, `Watch`, `Starter`, `Add`, or `Exit`.
-
-`us-smallmid-dislocation` is a candidate-generation workflow. It can end with `Pass`, `Watchlist`, or `Investigate`.
-
-Keeping those separate prevents a screening result from being mistaken for a portfolio action.
 
 ## Why Sharing Resources
 

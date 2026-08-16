@@ -220,7 +220,7 @@ class ReviewSingleTests(TestCase):
     def test_review_single_returns_packet_even_when_not_triggered(self) -> None:
         """A packet must be returned even when compute_trigger returns triggered=False.
 
-        This is the key smallmid use-case: stage 1 already triggered, so the deep
+        This is the key on-demand use-case: the caller already knows it wants the deep
         review layer must always produce the full evidence packet.
         """
         with tempfile.TemporaryDirectory() as tmp:

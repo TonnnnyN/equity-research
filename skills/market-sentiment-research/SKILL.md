@@ -11,8 +11,6 @@ Use this Skill for single-name or short-list market sentiment research after a m
 
 Is this pullback worth rejecting, watching, starting, adding to, or exiting?
 
-This is not the broad U.S. small/mid-cap screening Skill. For prepared-universe candidate generation, use `$us-smallmid-dislocation`.
-
 ## Bundle Map
 
 - `defaults/targets.toml`: portable target pool for Skill-level research.

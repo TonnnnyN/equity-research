@@ -3,7 +3,6 @@
 This reference covers shared project commands. Skill-specific scripts are documented inside each Skill:
 
 - `skills/market-sentiment-research/references/script_reference.md`
-- `skills/us-smallmid-dislocation/references/script_reference.md`
 
 ## CLI Entry Point
 

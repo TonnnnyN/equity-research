@@ -14,11 +14,11 @@
 
 这个项目换了个做法：先用一套**确定性的程序**把数据拉齐、整理成结构化的「证据包」，再让 AI 只在这份整理好的证据上做最后那一步判断。AI 不负责找信息，只负责推理。
 
-项目由两个 **Agent Skill** 组成，共用一套 Python 运行时。
+项目是一个 **Agent Skill**，配一套 Python 运行时。
 
 ---
 
-### Skill 1：Market Sentiment Research —— 单只票深度复核（已基本完成）
+### Market Sentiment Research —— 单只票深度复核
 
 针对**单只票的下跌事件**做复核。
 
@@ -35,18 +35,6 @@
 给出观望或加仓建议时，Agent 必须写清楚「什么情况下这个判断失效」，这些条件会被记下来，之后每天自动复查。
 
 **状态**：核心流程已经跑通，能端到端出报告，目前在持续打磨和回测验证。
-
----
-
-### Skill 2：U.S. Small/Mid Dislocation —— 小中盘批量初筛（开发中）
-
-针对**一大批美股小中盘**做初筛。
-
-给一张准备好的 CSV 宽表，它会过滤掉明显的红旗（破产、going concern、造假、退市风险等），找出「价格跌得比基本面严重」的候选票，输出 `Pass / Watchlist / Investigate`。
-
-它**不做最终买入判断**，只负责从几千只票里挑出值得细看的。真要做单票决策，还是回到 Skill 1。
-
-**状态**：确定性筛选脚本已经有了，完整的并发 subagent 工作流还在开发中。
 
 ---
 
@@ -80,8 +68,7 @@ market-sentiment --config config/watchlist.toml run-daily
 
 ```text
 skills/
-  market-sentiment-research/   # Skill 1，已基本完成
-  us-smallmid-dislocation/     # Skill 2，开发中
+  market-sentiment-research/   # 唯一的 Skill
 sharing-resources/
   src/market_sentiment/        # 共用的 Python 运行时
   references/ docs/ scripts/   # 文档和工具脚本
@@ -103,11 +90,11 @@ The usual situation: something in your watchlist drops, and you want to know whe
 
 This project does it differently. A **deterministic pipeline** first gathers the data and assembles it into a structured *evidence packet*. Only then does the AI step in — to reason over that packet. The AI doesn't fetch information; it only does the final judgment.
 
-The project is two **Agent Skills** sharing one Python runtime.
+The project is one **Agent Skill** with a Python runtime.
 
 ---
 
-### Skill 1: Market Sentiment Research — single-name review (mostly done)
+### Market Sentiment Research — single-name review
 
 Reviews a **pullback on a single stock**.
 
@@ -169,8 +156,7 @@ API keys needed: Tiger Trade, Alpha Vantage, FRED, SEC (user agent), DeepSeek �
 
 ```text
 skills/
-  market-sentiment-research/   # Skill 1, mostly done
-  us-smallmid-dislocation/     # Skill 2, in development
+  market-sentiment-research/   # the only Skill
 sharing-resources/
   src/market_sentiment/        # shared Python runtime
   references/ docs/ scripts/   # docs and utility scripts
