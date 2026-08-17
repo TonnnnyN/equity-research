@@ -18,16 +18,18 @@ enter ``bucket_scores``, MUST NOT change any ``ActionState``, MUST NOT set
 model that cannot run returns a structured "skipped + reason" ``ModelResult``,
 never a fabricated number.
 
-Entry point: ``evaluate(security, derived, fundamentals, prices, peer_contexts)``
-runs the router, then every enabled model, and returns a ``ValuationModelReport``
-whose ``results`` list contains exactly one ``ModelResult`` per one of the 12
-models — either its real output or a structured skip (router-driven or
-data-driven), so a caller never has to guess which of the 12 ran.
+Entry point: ``run_order(security, order, derived, fundamentals, prices, peer_contexts)``
+runs exactly the models the caller orders, with exactly the assumptions supplied,
+and returns a ``ValuationModelReport`` whose ``results`` list contains ``ModelResult``
+entries for the ordered models, and whose ``always_on`` list contains the four
+always-computed quality/risk metrics (piotroski_f_score, altman_z_score,
+beneish_m_score, net_cash_floor), which are pure formulas and must not be quietly
+omitted.
 
-Module layout (a package, not a single file, because 12 models plus a router don't
+Module layout (a package, not a single file, because 12 models plus routing don't
 fit legibly in one module):
 
-- ``_types``     ModelResult / RouterDecision / RouterProfile / RouterParams / ValuationModelReport
+- ``_types``     ModelResult / ModelOrder / DeclinedModel / ValuationModelReport
 - ``_series``    shared time-series reconstruction over ConceptHistory / PriceBar
 - ``_math``      bisection solver + growing-FCF / Gordon-growth present-value helpers
 - ``_dcf``       Group 1: reverse_dcf, two_stage_dcf, owner_earnings_valuation
@@ -35,7 +37,7 @@ fit legibly in one module):
 - ``_downside``  Group 3: net_cash_floor, sum_of_the_parts, cash_runway
 - ``_quality``   Group 4: piotroski_f_score, altman_z_score, beneish_m_score
 - ``_scenarios`` Group 4 (cont.): three_scenario_expected_value, ScenarioParams
-- ``_router``    the decision tree: route() + evaluate()
+- ``_router``    run_order: the entry point that runs ordered models
 """
 from __future__ import annotations
 
@@ -43,7 +45,7 @@ from market_sentiment.valuation_models._dcf import owner_earnings_valuation, rev
 from market_sentiment.valuation_models._downside import cash_runway, net_cash_floor, sum_of_the_parts
 from market_sentiment.valuation_models._quality import altman_z_score, beneish_m_score, piotroski_f_score
 from market_sentiment.valuation_models._relative import own_history_percentile, peer_comparison
-from market_sentiment.valuation_models._router import MODEL_NAMES, evaluate, route
+from market_sentiment.valuation_models._router import MODEL_NAMES, run_order
 from market_sentiment.valuation_models._scenarios import ScenarioParams, three_scenario_expected_value
 from market_sentiment.valuation_models._types import (
     GROUP_CASH_FLOW_INTRINSIC,
@@ -51,10 +53,10 @@ from market_sentiment.valuation_models._types import (
     GROUP_QUALITY_AND_RISK,
     GROUP_RELATIVE_VALUATION,
     LAYER_MARKER,
+    DeclinedModel,
+    ModelOrder,
     ModelResult,
-    RouterDecision,
     RouterParams,
-    RouterProfile,
     STATUS_OK,
     STATUS_SKIPPED,
     ValuationModelReport,
@@ -62,8 +64,7 @@ from market_sentiment.valuation_models._types import (
 
 __all__ = [
     "MODEL_NAMES",
-    "evaluate",
-    "route",
+    "run_order",
     "reverse_dcf",
     "two_stage_dcf",
     "owner_earnings_valuation",
@@ -78,8 +79,8 @@ __all__ = [
     "three_scenario_expected_value",
     "ScenarioParams",
     "ModelResult",
-    "RouterDecision",
-    "RouterProfile",
+    "DeclinedModel",
+    "ModelOrder",
     "RouterParams",
     "ValuationModelReport",
     "STATUS_OK",

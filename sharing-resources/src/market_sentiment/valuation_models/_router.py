@@ -1,6 +1,12 @@
-"""The router: a deterministic decision tree (plain Python, no LLM) that picks which
-of the 12 models to run from company profile + data availability, and reports which
-models were excluded and the specific reason for every one of them.
+"""run_order: The AI agent chooses which models to run; Python runs them.
+
+This module no longer contains routing logic (that moved to the caller). Instead,
+it defines MODEL_NAMES and the single entry point run_order(), which runs exactly
+the models the caller orders, with exactly the assumptions the caller supplies.
+
+The four always-on metrics (piotroski_f_score, altman_z_score, beneish_m_score,
+net_cash_floor) compute on every call regardless of whether the order names them,
+because they are pure formulas — facts, like the share price.
 """
 from __future__ import annotations
 
@@ -10,16 +16,13 @@ from market_sentiment.valuation_models._downside import cash_runway, net_cash_fl
 from market_sentiment.valuation_models._quality import altman_z_score, beneish_m_score, piotroski_f_score
 from market_sentiment.valuation_models._relative import own_history_percentile, peer_comparison
 from market_sentiment.valuation_models._scenarios import three_scenario_expected_value
-from market_sentiment.valuation_models._series import rolling_ttm_series
 from market_sentiment.valuation_models._types import (
     GROUP_CASH_FLOW_INTRINSIC,
     GROUP_DOWNSIDE_PROTECTION,
     GROUP_QUALITY_AND_RISK,
     GROUP_RELATIVE_VALUATION,
+    ModelOrder,
     ModelResult,
-    RouterDecision,
-    RouterParams,
-    RouterProfile,
     STATUS_SKIPPED,
     ValuationModelReport,
 )
@@ -54,163 +57,77 @@ _GROUP_OF: dict[str, str] = {
     "three_scenario_expected_value": GROUP_QUALITY_AND_RISK,
 }
 
-_ALL_MULTIPLES = ("ev_fcf", "ev_sales", "ev_ebitda", "pe")
-_FCF_NEGATIVE_MULTIPLES = ("ev_sales",)
+# The four metrics that always compute, regardless of whether the order names them.
+# These are pure formulas, not assumption-sensitive. Reason: they are facts, like
+# the share price, and must not be quietly omitted on a bullish day.
+_ALWAYS_ON_MODELS = frozenset(("piotroski_f_score", "altman_z_score", "beneish_m_score", "net_cash_floor"))
 
 
-def _fcf_series(fundamentals: ValuationFundamentals | None) -> list[tuple]:
-    if fundamentals is None:
-        return []
-    ocf = dict(rolling_ttm_series(fundamentals.concepts.get("operating_cashflow")))
-    capex = dict(rolling_ttm_series(fundamentals.concepts.get("capex")))
-    dates = sorted(set(ocf) & set(capex), reverse=True)
-    return [(d, ocf[d] - abs(capex[d])) for d in dates]
-
-
-def _select_discount_rates(
-    security: Security, beta, params: RouterParams
-) -> tuple[tuple[float, ...], str, str]:
-    """Never returns a single discount rate — even the CAPM-derived branch expands
-    into a +/- range. If beta is unreliable (the common case per architecture.md,
-    e.g. Zoom's 0.41 beta at R^2 0.037 on ~125 daily bars), CAPM is not used at all;
-    a documented sector-default range is used instead."""
-    layer_key = security.layer.value if hasattr(security.layer, "value") else str(security.layer)
-    if beta is not None and beta.reliable and beta.beta is not None:
-        r_capm = params.risk_free_rate + beta.beta * params.equity_risk_premium
-        candidates = sorted({round(r_capm - params.capm_spread, 4), round(r_capm, 4), round(r_capm + params.capm_spread, 4)})
-        rates = tuple(r for r in candidates if r > 0)
-        if not rates:
-            rates = params.sector_default_discount_rates.get(layer_key, params.fallback_discount_rates)
-        method = "capm_derived_range"
-        note = (
-            f"beta={beta.beta:.3f} reliable (R^2={beta.r_squared:.3f}, n={beta.observations}) -> CAPM point "
-            f"{r_capm:.4f} expanded to +/-{params.capm_spread} range {rates}; never used as a single point"
-        )
-    else:
-        rates = params.sector_default_discount_rates.get(layer_key, params.fallback_discount_rates)
-        method = "sector_default_range"
-        reason = beta.reason if beta is not None else "no beta estimate available"
-        note = (
-            f"beta unreliable or unavailable ({reason}) -> discount rate is NOT derived from CAPM; falling back "
-            f"to documented sector-default range for layer={layer_key}: {rates}"
-        )
-    return rates, method, note
-
-
-def route(
+def run_order(
     security: Security,
+    order: ModelOrder,
     derived: ValuationDerived,
     fundamentals: ValuationFundamentals | None,
+    prices: list[PriceBar],
     peer_contexts: list[PipelineContext] | None = None,
-    params: RouterParams | None = None,
-) -> RouterDecision:
-    params = params or RouterParams()
+) -> ValuationModelReport:
+    """Run exactly the models the caller ordered, with exactly the assumptions supplied.
+
+    The caller provides a ModelOrder specifying:
+    - models: which of the 12 to run (tuple of model names)
+    - assumptions: per-model assumption overrides (dict keyed by model name)
+    - rationale: why the caller chose these (string, required, must be non-empty)
+    - declined: models deliberately NOT run, with reasons (tuple of DeclinedModel)
+
+    This function validates the order and runs each named model. Four metrics
+    (piotroski_f_score, altman_z_score, beneish_m_score, net_cash_floor) always
+    compute regardless of whether the order names them, and appear in always_on.
+    Ordered models appear in results (with real output or skip reason).
+
+    Raises ValueError if:
+    - order.models names something that is not one of the 12 model names
+    - order.rationale is empty or whitespace
+    - order.assumptions contains a key that is not a known model name
+    """
     peer_contexts = peer_contexts or []
 
-    fcf = derived.ttm_fcf.value
-    if fcf is None:
-        fcf_sign = "unknown"
-    elif fcf > 0:
-        fcf_sign = "positive"
-    else:
-        fcf_sign = "negative"
+    # Validate the order.
+    if not isinstance(order.models, tuple):
+        raise ValueError("order.models must be a tuple")
+    unknown_models = set(order.models) - set(MODEL_NAMES)
+    if unknown_models:
+        raise ValueError(f"unknown model names in order.models: {unknown_models}")
 
-    fcf_stable: bool | None = None
-    if fcf_sign != "unknown":
-        series = _fcf_series(fundamentals)
-        if len(series) >= 2:
-            last_two = [v for _, v in series[:2]]
-            fcf_stable = all(v > 0 for v in last_two) if fcf_sign == "positive" else all(v <= 0 for v in last_two)
+    if not order.rationale or not order.rationale.strip():
+        raise ValueError("order.rationale must be non-empty and non-whitespace")
 
-    market_cap = derived.market_cap.value
-    net_cash = derived.net_cash.value
-    non_op = derived.non_operating_assets.value
-    net_cash_ratio = (net_cash / market_cap) if net_cash is not None and market_cap not in (None, 0) else None
-    non_op_ratio = (non_op / market_cap) if non_op is not None and market_cap not in (None, 0) else None
+    unknown_assumptions = set(order.assumptions.keys()) - set(MODEL_NAMES)
+    if unknown_assumptions:
+        raise ValueError(f"order.assumptions contains unknown model names: {unknown_assumptions}")
 
-    discount_rates, discount_method, discount_note = _select_discount_rates(security, derived.beta, params)
+    # Run the ordered models.
+    ordered_results: list[ModelResult] = []
+    for model_name in order.models:
+        assumptions_for_model = order.assumptions.get(model_name, {})
+        result = _run_model(model_name, security, derived, fundamentals, prices, peer_contexts, assumptions_for_model)
+        ordered_results.append(result)
 
-    layer_value = security.layer.value if hasattr(security.layer, "value") else str(security.layer)
-    profile = RouterProfile(
-        fcf_sign=fcf_sign,
-        fcf_stable=fcf_stable,
-        net_cash_to_market_cap=net_cash_ratio,
-        non_operating_to_market_cap=non_op_ratio,
-        beta_reliable=bool(derived.beta and derived.beta.reliable),
-        discount_rate_method=discount_method,
-        discount_rates=discount_rates,
-        layer=layer_value,
-        notes=[discount_note],
+    # Always compute the four quality/risk metrics.
+    always_on_results: list[ModelResult] = []
+    for model_name in _ALWAYS_ON_MODELS:
+        # Only compute if not already in the ordered set (avoid duplication).
+        if model_name not in order.models:
+            assumptions_for_model = order.assumptions.get(model_name, {})
+            result = _run_model(model_name, security, derived, fundamentals, prices, peer_contexts, assumptions_for_model)
+            always_on_results.append(result)
+
+    return ValuationModelReport(
+        ticker=security.ticker,
+        as_of=derived.as_of,
+        results=ordered_results,
+        always_on=always_on_results,
+        order=order,
     )
-
-    enabled: list[str] = []
-    excluded: list[dict[str, str]] = []
-
-    # ---- Group 1: DCF variants ----
-    dcf_models = ("reverse_dcf", "two_stage_dcf", "owner_earnings")
-    if fcf_sign == "positive":
-        enabled.extend(dcf_models)
-        if fcf_stable is False:
-            profile.notes.append(
-                "FCF positive but NOT stable across the last two TTM windows — DCF models still run, but treat "
-                "the growth/value ranges with extra skepticism"
-            )
-    elif fcf_sign == "negative":
-        for name in dcf_models:
-            excluded.append(
-                {
-                    "model": name,
-                    "reason": "ttm_fcf is negative — a DCF on a cash-burning company is self-deception; see "
-                    "cash_runway, EV/Sales (own_history_percentile / peer_comparison), and altman_z_score instead",
-                }
-            )
-    else:
-        for name in dcf_models:
-            excluded.append({"model": name, "reason": f"ttm_fcf sign unknown: {derived.ttm_fcf.reason}"})
-
-    # ---- Group 2: relative valuation ----
-    multiples = _FCF_NEGATIVE_MULTIPLES if fcf_sign == "negative" else _ALL_MULTIPLES
-    enabled.append("own_history_percentile")
-    enabled.append("peer_comparison")
-    profile.notes.append(
-        f"relative-valuation multiples restricted to {multiples} because ttm_fcf is negative"
-        if fcf_sign == "negative"
-        else f"relative-valuation multiples: {multiples}"
-    )
-
-    # ---- Group 3: downside protection ----
-    enabled.append("net_cash_floor")
-
-    force_sotp_reasons = []
-    if net_cash_ratio is not None and net_cash_ratio > params.net_cash_ratio_force_sotp:
-        force_sotp_reasons.append(f"net_cash/market_cap={net_cash_ratio:.1%} > {params.net_cash_ratio_force_sotp:.0%} threshold")
-        profile.notes.append("P/E de-emphasised (still reported, flagged): large net_cash relative to market_cap distorts earnings-based multiples")
-    if non_op_ratio is not None and non_op_ratio > params.non_operating_assets_materiality:
-        force_sotp_reasons.append(f"non_operating_assets/market_cap={non_op_ratio:.1%} > {params.non_operating_assets_materiality:.0%} materiality threshold")
-    enabled.append("sum_of_the_parts")
-    profile.notes.append(
-        "sum_of_the_parts FORCED by: " + "; ".join(force_sotp_reasons)
-        if force_sotp_reasons
-        else "sum_of_the_parts run by default (net-cash and non-operating-asset ratios below force thresholds)"
-    )
-
-    if fcf_sign == "negative":
-        enabled.append("cash_runway")
-    else:
-        excluded.append(
-            {
-                "model": "cash_runway",
-                "reason": f"ttm_fcf is {fcf_sign} — cash runway is only meaningful when FCF is negative",
-            }
-        )
-
-    # ---- Group 4: quality and risk — always attempted; each model self-skips on its own data gaps ----
-    enabled.extend(["piotroski_f_score", "altman_z_score", "beneish_m_score", "three_scenario_expected_value"])
-
-    excluded_names = {e["model"] for e in excluded}
-    enabled = [m for m in enabled if m not in excluded_names]
-
-    return RouterDecision(enabled_models=enabled, excluded=excluded, profile=profile)
 
 
 def _run_model(
@@ -220,66 +137,97 @@ def _run_model(
     fundamentals: ValuationFundamentals | None,
     prices: list[PriceBar],
     peer_contexts: list[PipelineContext],
-    decision: RouterDecision,
+    assumptions: dict,
 ) -> ModelResult:
-    rates = decision.profile.discount_rates
-    multiples = _FCF_NEGATIVE_MULTIPLES if decision.profile.fcf_sign == "negative" else _ALL_MULTIPLES
+    """Run a single model with the given assumptions. Return ModelResult with status
+    and output or skip_reason."""
 
     if name == "reverse_dcf":
-        return reverse_dcf(derived, discount_rates=rates)
+        # Extract assumptions, pass defaults explicitly if not provided.
+        discount_rates = assumptions.get("discount_rates")
+        if discount_rates is None:
+            return ModelResult(
+                model=name,
+                group=_GROUP_OF[name],
+                status=STATUS_SKIPPED,
+                skip_reason="no discount rate supplied in the order",
+            )
+        return reverse_dcf(
+            derived,
+            forecast_years=assumptions.get("forecast_years", 10),
+            discount_rates=discount_rates,
+            terminal_growth=assumptions.get("terminal_growth", 0.025),
+            fcf_basis=assumptions.get("fcf_basis", "ttm_fcf"),
+        )
+
     if name == "two_stage_dcf":
-        return two_stage_dcf(derived, discount_rates=rates)
+        discount_rates = assumptions.get("discount_rates")
+        if discount_rates is None:
+            return ModelResult(
+                model=name,
+                group=_GROUP_OF[name],
+                status=STATUS_SKIPPED,
+                skip_reason="no discount rate supplied in the order",
+            )
+        return two_stage_dcf(
+            derived,
+            stage1_years=assumptions.get("stage1_years", 5),
+            stage1_growth_rates=assumptions.get("stage1_growth_rates", (0.0, 0.05, 0.10)),
+            terminal_growth=assumptions.get("terminal_growth", 0.025),
+            discount_rates=discount_rates,
+        )
+
     if name == "owner_earnings":
-        return owner_earnings_valuation(derived, discount_rates=rates)
+        discount_rates = assumptions.get("discount_rates")
+        if discount_rates is None:
+            return ModelResult(
+                model=name,
+                group=_GROUP_OF[name],
+                status=STATUS_SKIPPED,
+                skip_reason="no discount rate supplied in the order",
+            )
+        return owner_earnings_valuation(
+            derived,
+            growth_rates=assumptions.get("growth_rates", (0.0, 0.05, 0.10)),
+            discount_rates=discount_rates,
+        )
+
     if name == "own_history_percentile":
+        multiples = assumptions.get("multiples")
+        if multiples is None:
+            multiples = ("ev_fcf", "ev_sales", "ev_ebitda", "pe")
         return own_history_percentile(fundamentals, derived, prices, multiples=multiples)
+
     if name == "peer_comparison":
+        multiples = assumptions.get("multiples")
+        if multiples is None:
+            multiples = ("ev_fcf", "ev_sales", "ev_ebitda", "pe")
         return peer_comparison(derived, security, peer_contexts, multiples=multiples)
+
     if name == "net_cash_floor":
         return net_cash_floor(derived, fundamentals)
+
     if name == "sum_of_the_parts":
-        return sum_of_the_parts(derived)
+        return sum_of_the_parts(
+            derived,
+            illiquidity_haircut=assumptions.get("illiquidity_haircut", 0.25),
+            include_operating_leases_in_net_debt=assumptions.get("include_operating_leases_in_net_debt", False),
+            operating_lease_liabilities=assumptions.get("operating_lease_liabilities"),
+        )
+
     if name == "cash_runway":
         return cash_runway(derived)
+
     if name == "piotroski_f_score":
         return piotroski_f_score(fundamentals)
+
     if name == "altman_z_score":
         return altman_z_score(derived, fundamentals, layer=security.layer)
+
     if name == "beneish_m_score":
         return beneish_m_score(fundamentals)
+
     if name == "three_scenario_expected_value":
         return three_scenario_expected_value(derived)
-    raise AssertionError(f"unknown model name: {name}")  # pragma: no cover — MODEL_NAMES is the only caller input
 
-
-def evaluate(
-    security: Security,
-    derived: ValuationDerived,
-    fundamentals: ValuationFundamentals | None,
-    prices: list[PriceBar],
-    peer_contexts: list[PipelineContext] | None = None,
-    params: RouterParams | None = None,
-) -> ValuationModelReport:
-    """Run the router, then every enabled model, and assemble the full report. Every
-    one of the 12 models appears exactly once in ``results`` — either its real
-    output or a structured skip with a reason, whether the skip came from the
-    router (profile-driven) or from the model itself (data-driven)."""
-    peer_contexts = peer_contexts or []
-    decision = route(security, derived, fundamentals, peer_contexts, params)
-
-    excluded_reason = {e["model"]: e["reason"] for e in decision.excluded}
-    results: list[ModelResult] = []
-    for name in MODEL_NAMES:
-        if name in excluded_reason:
-            results.append(
-                ModelResult(
-                    model=name,
-                    group=_GROUP_OF[name],
-                    status=STATUS_SKIPPED,
-                    skip_reason=f"[router] {excluded_reason[name]}",
-                )
-            )
-            continue
-        results.append(_run_model(name, security, derived, fundamentals, prices, peer_contexts, decision))
-
-    return ValuationModelReport(ticker=security.ticker, as_of=derived.as_of, router=decision, results=results)
+    raise AssertionError(f"unknown model name: {name}")  # pragma: no cover

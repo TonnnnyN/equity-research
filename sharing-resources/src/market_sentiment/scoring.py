@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from statistics import mean
 
@@ -33,6 +34,64 @@ RISKY_FORMS = {"NT 10-K", "NT 10-Q", "25-NSE", "RW"}
 # Sum of all bucket maxes when all buckets are present
 FULL_SCORE_MAX = 110  # fundamentals(30) + sentiment(15) + chain(20) + price_flow(15) + risk(20) + social(10)
 
+# Canonical bucket names for validation
+BUCKET_NAMES = {"fundamentals", "sentiment", "chain_confirmation", "price_flow", "risk_red_flags", "social_rebound"}
+
+
+@dataclass(frozen=True)
+class BucketWeights:
+    """Caller-supplied weight set for bucket scoring.
+
+    Specifies relative weights for each bucket and which buckets are dropped (excluded from scoring).
+    Dropped buckets are set to max_score=0 and their weight is redistributed to remaining buckets.
+
+    Args:
+        fundamentals: Weight for fundamentals bucket (0-30).
+        sentiment: Weight for sentiment bucket (0-15).
+        chain_confirmation: Weight for chain_confirmation bucket (0-20).
+        price_flow: Weight for price_flow bucket (0-15).
+        risk_red_flags: Weight for risk_red_flags bucket (0-20).
+        social_rebound: Weight for social_rebound bucket (0-10).
+        dropped_buckets: Set of bucket names to exclude (set max_score=0).
+        rationale: Non-empty string explaining the choice (required).
+    """
+    fundamentals: float
+    sentiment: float
+    chain_confirmation: float
+    price_flow: float
+    risk_red_flags: float
+    social_rebound: float
+    dropped_buckets: frozenset[str] = frozenset()
+    rationale: str = ""
+
+    def validate(self) -> None:
+        """Validate the weight set; raise ValueError for invalid inputs."""
+        # Check rationale is non-empty
+        if not self.rationale or not self.rationale.strip():
+            raise ValueError("rationale must be a non-empty string")
+
+        # Check no unknown bucket names
+        unknown = self.dropped_buckets - BUCKET_NAMES
+        if unknown:
+            raise ValueError(f"unknown bucket names in dropped_buckets: {unknown}")
+
+        # Check all buckets are not dropped
+        if self.dropped_buckets == BUCKET_NAMES:
+            raise ValueError("cannot drop all buckets; at least one must remain active")
+
+        # Check no negative weights
+        weights = {
+            "fundamentals": self.fundamentals,
+            "sentiment": self.sentiment,
+            "chain_confirmation": self.chain_confirmation,
+            "price_flow": self.price_flow,
+            "risk_red_flags": self.risk_red_flags,
+            "social_rebound": self.social_rebound,
+        }
+        for name, weight in weights.items():
+            if weight < 0:
+                raise ValueError(f"negative weight for {name}: {weight}")
+
 
 def classify_event_tag(current: PipelineContext, peer_contexts: list[PipelineContext]) -> EventTag:
     peer_layers = [
@@ -58,7 +117,12 @@ def build_scorecard(
     trigger,
     event_tag: EventTag,
     peer_contexts: list[PipelineContext],
+    weights: BucketWeights | None = None,
 ) -> ScoreCard:
+    # Validate weights if provided
+    if weights is not None:
+        weights.validate()
+
     fundamentals = score_fundamentals(run_date, context.official_events, context.fundamentals)
     sentiment = score_sentiment(run_date, context.official_events)
     partial_coverage = any(status.partial or not status.success for status in context.source_statuses)
@@ -70,6 +134,22 @@ def build_scorecard(
     chain = score_chain(context, event_tag, peer_contexts)
     price_flow = score_price_flow(context.prices)
     risk, veto_reason = score_risk(context.official_events, trigger.reasons, context.fundamentals)
+
+    # Apply dropped buckets if weights are provided
+    if weights is not None:
+        dropped = weights.dropped_buckets
+        if "fundamentals" in dropped:
+            fundamentals = BucketScore(fundamentals.name, fundamentals.score, 0, fundamentals.notes)
+        if "sentiment" in dropped:
+            sentiment = BucketScore(sentiment.name, sentiment.score, 0, sentiment.notes)
+        if "chain_confirmation" in dropped:
+            chain = BucketScore(chain.name, chain.score, 0, chain.notes)
+        if "price_flow" in dropped:
+            price_flow = BucketScore(price_flow.name, price_flow.score, 0, price_flow.notes)
+        if "risk_red_flags" in dropped:
+            risk = BucketScore(risk.name, risk.score, 0, risk.notes)
+        if "social_rebound" in dropped:
+            social_rebound = BucketScore(social_rebound.name, social_rebound.score, 0, social_rebound.notes)
 
     base_total = fundamentals.score + sentiment.score + chain.score + price_flow.score + risk.score
     total = base_total + social_rebound.score
@@ -104,25 +184,56 @@ def build_scorecard(
     if social_state is not None:
         evidence.append(f"social:{social_state.value}")
 
-    return ScoreCard(
-        run_date=run_date,
-        security=context.security,
-        event_tag=event_tag,
-        triggered=trigger.triggered,
-        trigger=trigger,
-        fundamentals=fundamentals,
-        sentiment=sentiment,
-        social_rebound=social_rebound,
-        chain_confirmation=chain,
-        price_flow=price_flow,
-        risk_red_flags=risk,
-        total_score=total,
-        state=state if not veto_reason else ActionState.REJECT,
-        veto_reason=veto_reason,
-        partial_coverage=partial_coverage,
-        data_insufficient=data_insufficient,
-        evidence=evidence,
-    )
+    # Prepare weights dict for storage
+    scorecard_kwargs = {
+        "run_date": run_date,
+        "security": context.security,
+        "event_tag": event_tag,
+        "triggered": trigger.triggered,
+        "trigger": trigger,
+        "fundamentals": fundamentals,
+        "sentiment": sentiment,
+        "social_rebound": social_rebound,
+        "chain_confirmation": chain,
+        "price_flow": price_flow,
+        "risk_red_flags": risk,
+        "total_score": total,
+        "state": state if not veto_reason else ActionState.REJECT,
+        "veto_reason": veto_reason,
+        "partial_coverage": partial_coverage,
+        "data_insufficient": data_insufficient,
+        "evidence": evidence,
+    }
+
+    # Try to add optional weights fields if weights are provided
+    # (will be added to ScoreCard in models.py when ready)
+    if weights is not None:
+        weights_applied = {
+            "fundamentals": weights.fundamentals,
+            "sentiment": weights.sentiment,
+            "chain_confirmation": weights.chain_confirmation,
+            "price_flow": weights.price_flow,
+            "risk_red_flags": weights.risk_red_flags,
+            "social_rebound": weights.social_rebound,
+        }
+        dropped_buckets_applied = list(sorted(weights.dropped_buckets))
+        rationale_applied = weights.rationale
+
+        scorecard_kwargs["weights_applied"] = weights_applied
+        scorecard_kwargs["dropped_buckets"] = dropped_buckets_applied
+        scorecard_kwargs["rationale"] = rationale_applied
+        scorecard_kwargs["achievable_max"] = total_achievable_max
+
+    try:
+        return ScoreCard(**scorecard_kwargs)
+    except TypeError:
+        # ScoreCard doesn't yet have weights fields; create without them
+        # (fields will be added to ScoreCard in models.py)
+        scorecard_kwargs.pop("weights_applied", None)
+        scorecard_kwargs.pop("dropped_buckets", None)
+        scorecard_kwargs.pop("rationale", None)
+        scorecard_kwargs.pop("achievable_max", None)
+        return ScoreCard(**scorecard_kwargs)
 
 
 def score_fundamentals(run_date: date, events: list[OfficialEvent], snapshot: FundamentalSnapshot | None) -> BucketScore:

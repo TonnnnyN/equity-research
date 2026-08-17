@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.models import PriceBar
+from market_sentiment.models import PipelineContext, PriceBar
 from market_sentiment.storage import Storage
 
 
@@ -193,10 +193,10 @@ class StorageTests(TestCase):
                 self.assertIsInstance(bar, PriceBar)
 
     def test_read_cached_prices_reference_date_anchors_cutoff_not_wallclock_today(self) -> None:
-        """A caller computing a window relative to a specific run_date (a backtest, a
-        delayed run, a fixed-date test) must get a cutoff anchored to that run_date —
-        not silently to wall-clock "today", which would wrongly exclude bars that are
-        within `days_back` of run_date but not within `days_back` of today."""
+        """A caller computing a window relative to a specific run_date (a delayed run, a
+        fixed-date test) must get a cutoff anchored to that run_date — not silently to
+        wall-clock "today", which would wrongly exclude bars that are within `days_back`
+        of run_date but not within `days_back` of today."""
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
             storage = Storage(data_dir / "state.db", data_dir)
@@ -433,3 +433,183 @@ class StorageTests(TestCase):
             self.assertEqual(decision["invalidate_conditions"], complex_invalidate)
             self.assertEqual(decision["rerate_conditions"], complex_rerate)
             self.assertEqual(decision["state"], "STARTER")
+
+    def test_company_portrait_storage_and_retrieval(self) -> None:
+        """Test that company portraits are stored and retrieved correctly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            ticker = "ACME"
+            # Use fixed dates to avoid flakiness with today's date
+            reference_date = date(2026, 8, 17)  # "today" for the test
+            run_date_1 = date(2026, 8, 15)
+            run_date_2 = date(2026, 8, 16)
+            portrait_data_1 = '{"q1": "bullish", "q2": "technical", ...}'
+            portrait_data_2 = '{"q1": "neutral", "q2": "fundamental", ...}'
+
+            # Store first portrait
+            storage.upsert_company_portrait(ticker, run_date_1, portrait_data_1)
+
+            # Store second portrait (newer)
+            storage.upsert_company_portrait(ticker, run_date_2, portrait_data_2)
+
+            # Retrieve latest portrait (excluding today)
+            latest = storage.get_latest_company_portrait(ticker, exclude_run_date=reference_date)
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest["portrait_json"], portrait_data_2)
+            self.assertEqual(latest["run_date"], run_date_2.isoformat())
+            self.assertEqual(latest["days_ago"], 1)
+
+            # Retrieve latest without exclusion
+            latest_all = storage.get_latest_company_portrait(ticker)
+            self.assertIsNotNone(latest_all)
+            self.assertEqual(latest_all["portrait_json"], portrait_data_2)
+            self.assertEqual(latest_all["run_date"], run_date_2.isoformat())
+
+    def test_model_order_storage_and_retrieval(self) -> None:
+        """Test that model orders are stored and retrieved correctly."""
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            ticker = "ACME"
+            reference_date = date(2026, 8, 17)  # "today" for the test
+            run_date_1 = date(2026, 8, 15)
+            run_date_2 = date(2026, 8, 16)
+            order_json_1 = '{"models": ["reverse_dcf"], "rationale": "bullish", ...}'
+            order_json_2 = '{"models": ["peer_comparison"], "rationale": "neutral", ...}'
+            report_path_2 = "/data/reports/2026-08-16/ACME_valuation_report.json"
+
+            # Store first order
+            storage.upsert_model_order(ticker, run_date_1, order_json_1)
+
+            # Store second order (newer) with report path
+            storage.upsert_model_order(ticker, run_date_2, order_json_2, report_path_2)
+
+            # Retrieve latest order (excluding today)
+            latest = storage.get_latest_model_order(ticker, exclude_run_date=reference_date)
+            self.assertIsNotNone(latest)
+            self.assertEqual(latest["order_json"], order_json_2)
+            self.assertEqual(latest["run_date"], run_date_2.isoformat())
+            self.assertEqual(latest["report_path"], report_path_2)
+            self.assertEqual(latest["days_ago"], 1)
+
+            # Retrieve latest without exclusion
+            latest_all = storage.get_latest_model_order(ticker)
+            self.assertIsNotNone(latest_all)
+            self.assertEqual(latest_all["order_json"], order_json_2)
+            self.assertEqual(latest_all["run_date"], run_date_2.isoformat())
+            self.assertEqual(latest_all["report_path"], report_path_2)
+
+    def test_previous_judgement_absent_on_first_run(self) -> None:
+        """Test that previous_judgement is None when no prior portrait or order exists."""
+        from market_sentiment.review_packets import build_review_packet
+        from market_sentiment.models import (
+            ActionState, BetaEstimate, BucketScore, EventTag,
+            PriceBar, PriceWindow, ProvenancedValue, ScoreCard,
+            Security, SourceStatus, TriggerResult, ValuationDerived
+        )
+        from datetime import datetime
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            security = Security(ticker="NEW", name="New Co", layer="ai_applications", benchmark="QQQ")
+            run_date = date(2026, 8, 16)
+
+            context = PipelineContext(
+                security=security,
+                benchmark_ticker="QQQ",
+                prices=[],
+                benchmark_prices=[],
+                official_events=[],
+                fundamentals=None,
+                macro=[],
+                source_statuses=[],
+            )
+            scorecard = ScoreCard(
+                run_date=run_date,
+                security=security,
+                event_tag=EventTag.COMPANY_SPECIFIC,
+                triggered=True,
+                trigger=TriggerResult(triggered=True, reasons=[]),
+                fundamentals=BucketScore("fundamentals", 10, 30),
+                sentiment=BucketScore("sentiment", 5, 15),
+                chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+                price_flow=BucketScore("price_flow", 3, 15),
+                risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+                total_score=70,
+                state=ActionState.WATCH,
+            )
+
+            packet = build_review_packet(datetime(2026, 8, 16, 14, 0, 0), context, scorecard, storage=storage)
+            self.assertIsNone(packet.get("previous_judgement"))
+
+    def test_previous_judgement_populated_on_second_run(self) -> None:
+        """Test that previous_judgement is populated on a second run with prior data."""
+        from market_sentiment.review_packets import build_review_packet
+        from market_sentiment.models import (
+            ActionState, BetaEstimate, BucketScore, EventTag,
+            PriceBar, PriceWindow, ProvenancedValue, ScoreCard,
+            Security, SourceStatus, TriggerResult, ValuationDerived
+        )
+        from datetime import datetime
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            ticker = "ZM"
+            run_date_1 = date(2026, 8, 15)
+            run_date_2 = date(2026, 8, 16)
+
+            # Store a portrait and order from the first run
+            portrait_json = '{"q1": "bullish", "evidence": "..."}'
+            order_json = '{"models": ["reverse_dcf"], "rationale": "..."}'
+            storage.upsert_company_portrait(ticker, run_date_1, portrait_json)
+            storage.upsert_model_order(ticker, run_date_1, order_json, "/data/reports/2026-08-15/ZM_valuation_report.json")
+
+            # Build a packet for the second run
+            security = Security(ticker=ticker, name="Zoom", layer="ai_applications", benchmark="QQQ")
+            context = PipelineContext(
+                security=security,
+                benchmark_ticker="QQQ",
+                prices=[],
+                benchmark_prices=[],
+                official_events=[],
+                fundamentals=None,
+                macro=[],
+                source_statuses=[],
+            )
+            scorecard = ScoreCard(
+                run_date=run_date_2,
+                security=security,
+                event_tag=EventTag.COMPANY_SPECIFIC,
+                triggered=True,
+                trigger=TriggerResult(triggered=True, reasons=[]),
+                fundamentals=BucketScore("fundamentals", 10, 30),
+                sentiment=BucketScore("sentiment", 5, 15),
+                chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+                price_flow=BucketScore("price_flow", 3, 15),
+                risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+                total_score=70,
+                state=ActionState.WATCH,
+            )
+
+            packet = build_review_packet(datetime(2026, 8, 16, 14, 0, 0), context, scorecard, storage=storage)
+
+            # Check that previous_judgement is populated
+            previous_judgement = packet.get("previous_judgement")
+            self.assertIsNotNone(previous_judgement)
+            self.assertIn("portrait", previous_judgement)
+            self.assertIn("order", previous_judgement)
+            self.assertEqual(previous_judgement["portrait"]["portrait_json"], portrait_json)
+            self.assertEqual(previous_judgement["portrait"]["days_ago"], 1)
+            self.assertEqual(previous_judgement["order"]["order_json"], order_json)
+            self.assertEqual(previous_judgement["order"]["days_ago"], 1)

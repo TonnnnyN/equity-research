@@ -11,6 +11,8 @@ from market_sentiment.config import load_config
 from market_sentiment.email_delivery import send_report_email
 from market_sentiment.models import Layer
 from market_sentiment.pipeline import DailyPipeline
+from market_sentiment import valuation_models
+from market_sentiment.valuation_models._types import ModelOrder, DeclinedModel
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,6 +85,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional human-readable company name.",
     )
 
+    valuation_order = subparsers.add_parser(
+        "valuation-order",
+        help="Place a valuation model order and run ordered models for a ticker.",
+    )
+    valuation_order.add_argument(
+        "ticker",
+        help="The ticker symbol to run models for (e.g. ACMR, IRTC, ZM).",
+    )
+    valuation_order.add_argument(
+        "--order",
+        dest="order_file",
+        required=True,
+        help="Path to the order JSON file (models, assumptions, rationale, declined).",
+    )
+    valuation_order.add_argument(
+        "--date",
+        dest="run_date",
+        help="Run date in YYYY-MM-DD format. Defaults to today.",
+    )
+    valuation_order.add_argument(
+        "--portrait",
+        dest="portrait_file",
+        default=None,
+        help="Optional path to company portrait JSON file to store alongside the order.",
+    )
+
     return parser
 
 
@@ -98,6 +126,133 @@ def resolve_run_date(run_date: str | None, timezone_name: str, now: datetime | N
     if current.tzinfo is None:
         current = current.replace(tzinfo=zone)
     return current.astimezone(zone).date()
+
+
+def _handle_valuation_order(pipeline: DailyPipeline, args: argparse.Namespace, run_date: date) -> int:
+    """Handle the valuation-order subcommand.
+
+    Loads an order JSON, fetches valuation fundamentals/derived/prices for the ticker,
+    runs the ordered models, and writes the report to disk.
+    """
+    from market_sentiment.valuation import compute_valuation_derived
+
+    ticker = args.ticker.upper()
+    order_file = Path(args.order_file)
+    portrait_file = Path(args.portrait_file) if args.portrait_file else None
+
+    # Load and parse the order JSON
+    try:
+        order_data = json.loads(order_file.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as exc:
+        print(f"Failed to load order file {order_file}: {exc}", file=sys.stderr)
+        return 1
+
+    # Build the ModelOrder, allowing ValueError to propagate for loud failure
+    try:
+        # Convert lists to tuples as required by ModelOrder
+        models = tuple(order_data.get("models", []))
+        assumptions = order_data.get("assumptions", {})
+        rationale = order_data.get("rationale", "")
+        declined_list = order_data.get("declined", [])
+        declined = tuple(
+            DeclinedModel(model=d["model"], reason=d["reason"])
+            for d in declined_list
+        )
+        order = ModelOrder(models=models, assumptions=assumptions, rationale=rationale, declined=declined)
+    except (KeyError, ValueError) as exc:
+        print(f"Invalid order JSON: {exc}", file=sys.stderr)
+        return 1
+
+    # Fetch valuation data for the ticker
+    try:
+        pipeline.storage.init_db()
+
+        # Fetch prices
+        prices, _, _ = pipeline.get_price_history(ticker, run_date)
+        if not prices:
+            print(f"Could not fetch price history for {ticker}", file=sys.stderr)
+            return 1
+
+        # Fetch valuation fundamentals and derive valuation inputs
+        valuation_payload = pipeline._fetch_valuation_fundamentals_with_recovery(ticker, run_date)
+        valuation_fundamentals = valuation_payload.data
+        if valuation_fundamentals is None:
+            print(f"Could not fetch valuation fundamentals for {ticker}", file=sys.stderr)
+            return 1
+
+        # Compute valuation derived metrics
+        benchmark_prices, _, _ = pipeline.get_price_history("IWM", run_date)
+        valuation_derived = compute_valuation_derived(
+            ticker=ticker,
+            as_of=run_date,
+            fundamentals=valuation_fundamentals,
+            prices=prices,
+            benchmark_prices=benchmark_prices,
+        )
+        if valuation_derived is None:
+            print(f"Could not compute valuation derived metrics for {ticker}", file=sys.stderr)
+            return 1
+
+        # Create a minimal Security object
+        from market_sentiment.models import Security
+        security = Security(
+            ticker=ticker,
+            name=ticker,
+            layer="ai_applications",
+            benchmark="IWM",
+        )
+
+    except Exception as exc:
+        print(f"Failed to fetch valuation data for {ticker}: {exc}", file=sys.stderr)
+        return 1
+
+    # Run the order through the valuation models (loud failure for invalid orders)
+    try:
+        report = valuation_models.run_order(
+            security=security,
+            order=order,
+            derived=valuation_derived,
+            fundamentals=valuation_fundamentals,
+            prices=prices,
+            peer_contexts=[],
+        )
+    except ValueError as exc:
+        # Loud failure for invalid orders — agent mistake
+        print(f"Invalid valuation order: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"Failed to run valuation models: {exc}", file=sys.stderr)
+        return 1
+
+    # Write the report to disk
+    report_dir = pipeline.storage.data_dir / "reports" / run_date.isoformat()
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"{ticker}_valuation_report.json"
+    report_json = json.dumps(report.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
+    report_path.write_text(report_json, encoding="utf-8")
+
+    # Store the order in the database
+    pipeline.storage.upsert_model_order(
+        ticker, run_date, json.dumps(order_data), str(report_path)
+    )
+
+    # Store the portrait if provided
+    if portrait_file and portrait_file.exists():
+        try:
+            portrait_data = portrait_file.read_text(encoding="utf-8")
+            pipeline.storage.upsert_company_portrait(ticker, run_date, portrait_data)
+            print(f"[valuation-order] portrait stored for {ticker}", file=sys.stderr)
+        except Exception as exc:
+            print(f"Warning: failed to store portrait: {exc}", file=sys.stderr)
+
+    # Print readable summary
+    print(f"Valuation report for {ticker} on {run_date}:")
+    print(f"  Models run: {len(report.results)}")
+    print(f"  Always-on metrics: {len(report.always_on)}")
+    print(f"  Report saved to: {report_path}")
+    print(json.dumps(report.to_dict(), indent=2, sort_keys=True, ensure_ascii=False))
+
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -177,6 +332,9 @@ def main(argv: list[str] | None = None) -> int:
         out_path.write_text(packet_json, encoding="utf-8")
         print(f"\n[review-ticker] packet saved to {out_path}", file=sys.stderr)
         return 0
+
+    if args.command == "valuation-order":
+        return _handle_valuation_order(pipeline, args, run_date)
 
     parser.error(f"Unknown command: {args.command}")
     return 2

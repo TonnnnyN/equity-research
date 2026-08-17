@@ -6,6 +6,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 import shutil
 
 from market_sentiment.models import AnalystConsensusSnapshotRow, AnalystRatingActionRow, FilingSummaryCacheRow, FundamentalSnapshot, MacroObservation, OfficialEvent, PriceBar, SocialPost, SocialPostCacheRow, SocialSnapshot
@@ -221,6 +222,29 @@ CREATE TABLE IF NOT EXISTS active_decisions (
     created_at TEXT NOT NULL,
     PRIMARY KEY (ticker, decision_date)
 );
+
+CREATE TABLE IF NOT EXISTS company_portraits (
+    ticker TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    portrait_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (ticker, run_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_portraits_ticker_run_date
+  ON company_portraits(ticker, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS model_orders (
+    ticker TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    order_json TEXT NOT NULL,
+    report_path TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (ticker, run_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_orders_ticker_run_date
+  ON model_orders(ticker, run_date DESC);
 """
 
 
@@ -298,7 +322,7 @@ class Storage:
         ``reference_date`` defaults to today (UTC) when omitted, preserving prior
         behavior for existing callers. Pipeline callers computing a deep-history window
         relative to a specific run date (which may not be "today" — a delayed run, a
-        backtest, a test fixture) should pass ``reference_date=run_date`` explicitly;
+        test fixture) should pass ``reference_date=run_date`` explicitly;
         otherwise the cutoff is silently anchored to wall-clock "now" instead of the
         logical as-of date, which can exclude bars that are within depth of run_date but
         not within depth of today.
@@ -969,6 +993,117 @@ class Storage:
             conn.commit()
 
         return summary
+
+    def upsert_company_portrait(self, ticker: str, run_date: date, portrait_json: str) -> None:
+        """Store or update a company portrait (agent's answers to six portrait questions)."""
+        created_at = datetime.now(timezone.utc).isoformat()
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO company_portraits
+                (ticker, run_date, portrait_json, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (ticker, run_date.isoformat(), portrait_json, created_at),
+            )
+            conn.commit()
+
+    def get_latest_company_portrait(self, ticker: str, exclude_run_date: date | None = None) -> dict[str, Any] | None:
+        """Retrieve the most recent company portrait for a ticker, optionally excluding a specific run date.
+
+        Returns a dict with 'portrait_json', 'run_date', and 'days_ago', or None if no portrait exists.
+        """
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            if exclude_run_date:
+                row = conn.execute(
+                    """
+                    SELECT portrait_json, run_date
+                    FROM company_portraits
+                    WHERE ticker = ? AND run_date != ?
+                    ORDER BY run_date DESC
+                    LIMIT 1
+                    """,
+                    (ticker, exclude_run_date.isoformat()),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT portrait_json, run_date
+                    FROM company_portraits
+                    WHERE ticker = ?
+                    ORDER BY run_date DESC
+                    LIMIT 1
+                    """,
+                    (ticker,),
+                ).fetchone()
+
+        if row is None:
+            return None
+
+        portrait_json_str, run_date_str = row
+        portrait_run_date = date.fromisoformat(run_date_str)
+        days_ago = (exclude_run_date if exclude_run_date else date.today()) - portrait_run_date
+        return {
+            "portrait_json": portrait_json_str,
+            "run_date": portrait_run_date.isoformat(),
+            "days_ago": days_ago.days,
+        }
+
+    def upsert_model_order(self, ticker: str, run_date: date, order_json: str, report_path: str | None = None) -> None:
+        """Store or update a model order and its resulting report location."""
+        created_at = datetime.now(timezone.utc).isoformat()
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO model_orders
+                (ticker, run_date, order_json, report_path, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (ticker, run_date.isoformat(), order_json, report_path, created_at),
+            )
+            conn.commit()
+
+    def get_latest_model_order(self, ticker: str, exclude_run_date: date | None = None) -> dict[str, Any] | None:
+        """Retrieve the most recent model order for a ticker, optionally excluding a specific run date.
+
+        Returns a dict with 'order_json', 'report_path', 'run_date', and 'days_ago', or None if no order exists.
+        """
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            if exclude_run_date:
+                row = conn.execute(
+                    """
+                    SELECT order_json, report_path, run_date
+                    FROM model_orders
+                    WHERE ticker = ? AND run_date != ?
+                    ORDER BY run_date DESC
+                    LIMIT 1
+                    """,
+                    (ticker, exclude_run_date.isoformat()),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT order_json, report_path, run_date
+                    FROM model_orders
+                    WHERE ticker = ?
+                    ORDER BY run_date DESC
+                    LIMIT 1
+                    """,
+                    (ticker,),
+                ).fetchone()
+
+        if row is None:
+            return None
+
+        order_json_str, report_path, run_date_str = row
+        order_run_date = date.fromisoformat(run_date_str)
+        days_ago = (exclude_run_date if exclude_run_date else date.today()) - order_run_date
+        return {
+            "order_json": order_json_str,
+            "report_path": report_path,
+            "run_date": order_run_date.isoformat(),
+            "days_ago": days_ago.days,
+        }
 
 
 @dataclass(slots=True)

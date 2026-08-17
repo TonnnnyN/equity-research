@@ -15,6 +15,7 @@ from market_sentiment.models import (
     PriceBar,
     ScoreCard,
 )
+from market_sentiment.storage import Storage
 
 
 def build_review_packet(
@@ -22,6 +23,7 @@ def build_review_packet(
     context: PipelineContext,
     scorecard: ScoreCard,
     peer_contexts: list[PipelineContext] | None = None,
+    storage: Storage | None = None,
 ) -> dict[str, Any]:
     prices = sorted(context.prices, key=lambda bar: bar.trading_date)
     benchmark_prices = sorted(context.benchmark_prices, key=lambda bar: bar.trading_date)
@@ -32,7 +34,7 @@ def build_review_packet(
     return _serialize(
         {
             "packet_type": "agent_review_packet",
-            "schema_version": "1.4",
+            "schema_version": "1.5",
             "packet_id": f"{scorecard.run_date.isoformat()}::{scorecard.security.ticker}",
             "generated_at": generated_at,
             "run_date": scorecard.run_date,
@@ -78,18 +80,14 @@ def build_review_packet(
             "official_events": [_serialize_event(event) for event in context.official_events[:5]],
             "fundamentals_snapshot": _serialize_fundamentals(context.fundamentals),
             "valuation_inputs": _serialize_valuation_inputs(context, prices, peer_contexts),
+            "previous_judgement": _get_previous_judgement(storage, scorecard.security.ticker, scorecard.run_date),
             "option_summary": _serialize_option_snapshot(getattr(context, "options_snapshot", None)),
             "social_summary": _serialize_social_summary(context),
             "analyst_summary": _serialize_analyst_summary(context),
             "macro_summary": macro_summary,
             "source_health": [_serialize(asdict(status)) for status in context.source_statuses],
             "social_source_health": [_serialize(asdict(status)) for status in getattr(context, "social_source_statuses", [])],
-            "options_source_health": [_serialize(asdict(status)) for status in getattr(context, "options_source_statuses", [])],
-            "decision_summary": {
-                "top_positive_signals": _top_positive_signals(scorecard, context),
-                "top_risk_signals": _top_risk_signals(scorecard, context),
-                "next_checks": _next_checks(scorecard, context),
-            },
+            "social_sources_to_fetch": _build_social_sources_to_fetch(scorecard.security.ticker),
             "agent_questions": [
                 "这次下跌更像短期情绪波动、基本面恶化，还是系统性/行业性因素？",
                 "当前证据是否支持继续观察、建立仓位，还是暂时回避？",
@@ -98,6 +96,27 @@ def build_review_packet(
         }
     )
 
+
+
+def _get_previous_judgement(storage: Storage | None, ticker: str, run_date: date) -> dict[str, Any] | None:
+    """Retrieve the most recent portrait and order for a ticker, excluding today's run_date.
+
+    Returns a dict with portrait, order, and days_ago keys, or None if storage is not
+    available or no previous judgement exists.
+    """
+    if storage is None:
+        return None
+
+    portrait_record = storage.get_latest_company_portrait(ticker, exclude_run_date=run_date)
+    order_record = storage.get_latest_model_order(ticker, exclude_run_date=run_date)
+
+    if portrait_record is None and order_record is None:
+        return None
+
+    return _serialize({
+        "portrait": portrait_record,
+        "order": order_record,
+    })
 
 
 def _serialize_price(bar: PriceBar | None) -> dict[str, Any] | None:
@@ -287,9 +306,13 @@ def _serialize_valuation_inputs(
     This is Layer 2 advisory evidence only, following the ``analyst_summary`` pattern
     exactly — it MUST NOT enter ``bucket_scores``, MUST NOT change any score or state,
     MUST NOT set ``partial_coverage``, and MUST NOT be able to fail the pipeline.
-    Alongside the raw ``fundamentals`` / ``derived`` inputs, this also carries
-    ``models`` — the output of the ``valuation_models`` router + 12-model layer built
-    on top of them. Returns None when nothing is available.
+
+    At packet-build time, computes only the four always-on metrics (piotroski_f_score,
+    altman_z_score, beneish_m_score, net_cash_floor) and exposes them under always_on.
+    Ordered model results do not exist at packet-build time; the agent places an order
+    via CLI after reading the packet, and ordered results are written separately.
+
+    Returns None when no valuation data is available.
     """
     fundamentals = getattr(context, "valuation_fundamentals", None)
     derived = getattr(context, "valuation_derived", None)
@@ -299,38 +322,45 @@ def _serialize_valuation_inputs(
         {
             "fundamentals": fundamentals,
             "derived": derived,
-            "models": _serialize_valuation_models(context, derived, fundamentals, prices, peer_contexts),
+            "always_on": _compute_always_on_metrics(context, derived, fundamentals),
+            "models": None,  # ordered model results are populated later via valuation-order CLI subcommand
         }
     )
 
 
-def _serialize_valuation_models(
+def _compute_always_on_metrics(
     context: PipelineContext,
     derived: Any,
     fundamentals: Any,
-    prices: list[PriceBar],
-    peer_contexts: list[PipelineContext] | None,
-) -> dict[str, Any] | None:
-    """Run the Layer 2 valuation MODEL layer (``valuation_models.evaluate``) and
-    serialize its report. Wrapped exactly like the existing valuation fetch in
-    ``pipeline.py``'s ``_fetch_valuation_fundamentals_with_recovery`` /
-    ``compute_valuation_derived`` calls: this MUST NOT enter ``bucket_scores``,
-    MUST NOT change any ``ActionState``, MUST NOT set ``partial_coverage``, and
-    MUST NOT be able to raise into or fail the pipeline. Any failure — including a
-    missing ``ValuationDerived`` (the router's only required input besides
-    ``Security``) — degrades to None rather than raising.
+) -> list[dict[str, Any]] | None:
+    """Compute the four always-on metrics (piotroski_f_score, altman_z_score,
+    beneish_m_score, net_cash_floor) that Python computes unconditionally
+    at packet-build time because they are pure formulas — facts, like the
+    share price.
+
+    This is Layer 2 advisory evidence only. It MUST NOT enter bucket_scores,
+    MUST NOT change any ActionState, MUST NOT set partial_coverage, and
+    MUST NOT be able to raise into or fail the pipeline. Any failure degrades
+    to None rather than raising.
     """
     if derived is None:
         return None
     try:
-        report = valuation_models.evaluate(
-            security=context.security,
-            derived=derived,
-            fundamentals=fundamentals,
-            prices=prices,
-            peer_contexts=peer_contexts or [],
-        )
-        return report.to_dict()
+        results = []
+        # Compute each of the four always-on metrics.
+        for model_name in ("piotroski_f_score", "altman_z_score", "beneish_m_score", "net_cash_floor"):
+            if model_name == "piotroski_f_score":
+                result = valuation_models.piotroski_f_score(fundamentals)
+            elif model_name == "altman_z_score":
+                result = valuation_models.altman_z_score(derived, fundamentals, layer=context.security.layer)
+            elif model_name == "beneish_m_score":
+                result = valuation_models.beneish_m_score(fundamentals)
+            elif model_name == "net_cash_floor":
+                result = valuation_models.net_cash_floor(derived, fundamentals)
+            else:
+                continue  # pragma: no cover
+            results.append(result.to_dict())
+        return results if results else None
     except Exception:
         return None
 
@@ -458,64 +488,37 @@ def _classify_source_tone(recent_stance: float, delta: float) -> str:
     return "mixed_unclear"
 
 
-def _top_positive_signals(scorecard: ScoreCard, context: PipelineContext) -> list[str]:
-    signals: list[str] = []
-    snapshot = context.fundamentals
-    if snapshot and snapshot.revenue_latest is not None and snapshot.revenue_previous not in (None, 0):
-        revenue_growth = (snapshot.revenue_latest - snapshot.revenue_previous) / abs(snapshot.revenue_previous)
-        if revenue_growth > 0:
-            signals.append(f"营收同比增长 {revenue_growth:.1%}")
-    if snapshot and snapshot.operating_cashflow_latest is not None and snapshot.operating_cashflow_latest > 0:
-        signals.append("经营现金流为正")
-    if snapshot and snapshot.cash_latest is not None and snapshot.debt_latest is not None and snapshot.cash_latest >= snapshot.debt_latest:
-        signals.append("现金覆盖债务")
-    if any(event.form_type in {"10-Q", "10-K", "8-K"} for event in context.official_events[:5]):
-        signals.append("近期有高质量官方披露")
-    social_snapshot = getattr(context, "social_snapshot", None)
-    if social_snapshot and social_snapshot.score > 0:
-        signals.append(f"社交情绪改善，delta {social_snapshot.delta:.2f}")
-    options_snapshot = getattr(context, "options_snapshot", None)
-    if options_snapshot and options_snapshot.put_call_volume_ratio is not None and options_snapshot.put_call_volume_ratio < 0.8:
-        signals.append(f"期权成交量 put/call 比 {options_snapshot.put_call_volume_ratio:.2f}")
-    if scorecard.event_tag.value == "company_specific":
-        signals.append("更像公司特异性回撤")
-    return signals[:3]
+def _build_social_sources_to_fetch(ticker: str) -> list[dict[str, Any]]:
+    """Build a list of social media URLs for the agent to fetch directly.
 
+    Returns search URLs for Reddit and other platforms with ticker already substituted.
+    The agent can fetch these URLs directly using its own web tools.
+    """
+    import urllib.parse
 
-def _top_risk_signals(scorecard: ScoreCard, context: PipelineContext) -> list[str]:
-    signals: list[str] = []
-    snapshot = context.fundamentals
-    if "fresh_low" in scorecard.trigger.reasons or scorecard.trigger.new_low:
-        signals.append("价格仍在近期新低区间")
-    if snapshot and snapshot.cash_latest is not None and snapshot.debt_latest is not None and snapshot.cash_latest < snapshot.debt_latest:
-        signals.append("债务高于现金")
-    if scorecard.partial_coverage:
-        signals.append("本次数据覆盖不完整")
-    social_snapshot = getattr(context, "social_snapshot", None)
-    if social_snapshot and social_snapshot.score < 0:
-        signals.append("社交讨论继续恶化")
-    options_snapshot = getattr(context, "options_snapshot", None)
-    if options_snapshot and options_snapshot.put_call_volume_ratio is not None and options_snapshot.put_call_volume_ratio >= 1.2:
-        signals.append(f"期权成交量 put/call 比偏高 {options_snapshot.put_call_volume_ratio:.2f}")
-    if scorecard.event_tag.value != "company_specific":
-        signals.append("下跌可能受板块或市场共振影响")
-    if not context.official_events:
-        signals.append("近期缺少高质量官方披露")
-    return signals[:3]
+    sources = []
 
+    # Reddit search URL with recent filter (past month)
+    reddit_query = f"{ticker} stock"
+    reddit_url = f"https://www.reddit.com/r/stocks/search/?q={urllib.parse.quote(reddit_query)}&sort=new&t=month"
+    sources.append({
+        "platform": "reddit",
+        "url": reddit_url,
+        "description": f"Recent r/stocks discussions about {ticker}",
+        "lookback_window": "past 30 days",
+    })
 
-def _next_checks(scorecard: ScoreCard, context: PipelineContext) -> list[str]:
-    checks: list[str] = []
-    if "fresh_low" in scorecard.trigger.reasons or scorecard.trigger.new_low:
-        checks.append("先观察是否脱离近期新低区间")
-    checks.append(f"继续跟踪相对 {context.benchmark_ticker} 的强弱变化")
-    if getattr(context, "options_snapshot", None):
-        checks.append("继续跟踪最近到期日附近的 put/call 比和主力 strike")
-    if any(event.form_type in {"10-Q", "10-K", "8-K"} for event in context.official_events[:5]):
-        checks.append("跟踪下一次经营类披露是否延续当前结论")
-    else:
-        checks.append("等待更高质量的经营披露补充证据")
-    return checks[:3]
+    # X (Twitter) search URL with recent tweets
+    x_query = f"${ticker} stock"
+    x_url = f"https://x.com/search?q={urllib.parse.quote(x_query)}&f=live"
+    sources.append({
+        "platform": "x",
+        "url": x_url,
+        "description": f"Recent X posts mentioning {ticker}",
+        "lookback_window": "past week (X default)",
+    })
+
+    return sources
 
 
 def _serialize(value: Any) -> Any:

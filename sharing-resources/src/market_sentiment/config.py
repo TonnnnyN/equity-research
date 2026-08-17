@@ -122,14 +122,6 @@ class SocialConfig:
 
 
 @dataclass(slots=True)
-class OptionsConfig:
-    enabled: bool = False
-    provider: str = "alpha_vantage"
-    require_greeks: bool = False
-    max_contracts: int = 80
-
-
-@dataclass(slots=True)
 class ProjectConfig:
     name: str
     timezone: str
@@ -139,12 +131,9 @@ class ProjectConfig:
     report_email: EmailDeliveryConfig
     retention: RetentionConfig
     social: SocialConfig
-    options: OptionsConfig
     securities: list[Security]
     benchmarks: dict[str, Benchmark]
     thresholds: dict[Layer, Threshold]
-    fred_series: dict[str, str]
-    eia_series: dict[str, str]
 
 
 def load_config(config_path: str | None = None) -> ProjectConfig:
@@ -187,22 +176,6 @@ def load_config(config_path: str | None = None) -> ProjectConfig:
         for security in security_block
     ]
 
-    macro = raw.get("macro", {})
-    fred_raw = macro.get("fred", macro.get("fred_series", {}))
-    if isinstance(fred_raw, list):
-        fred_series = {series_id.lower(): series_id for series_id in fred_raw}
-    else:
-        fred_series = fred_raw
-    eia_series: dict[str, str] = {}
-    eia_raw = macro.get("eia", {})
-    if isinstance(eia_raw, dict):
-        eia_series.update(
-            {key: value for key, value in eia_raw.items() if isinstance(value, str) and value}
-        )
-    legacy_route = macro.get("eia_natural_gas_route")
-    if isinstance(legacy_route, str) and legacy_route and "natural_gas" not in eia_series:
-        eia_series["natural_gas"] = legacy_route
-
     email_block = raw.get("email", {})
     if not isinstance(email_block, dict):
         email_block = {}
@@ -215,10 +188,6 @@ def load_config(config_path: str | None = None) -> ProjectConfig:
     if not isinstance(social_block, dict):
         social_block = {}
     social = _load_social_config(social_block)
-    options_block = raw.get("options", {})
-    if not isinstance(options_block, dict):
-        options_block = {}
-    options = _load_options_config(options_block)
 
     return ProjectConfig(
         name=project.get("name", "market-sentiment-v1"),
@@ -232,12 +201,9 @@ def load_config(config_path: str | None = None) -> ProjectConfig:
         report_email=report_email,
         retention=retention,
         social=social,
-        options=options,
         securities=securities,
         benchmarks=benchmarks,
         thresholds=thresholds,
-        fred_series=fred_series,
-        eia_series=eia_series,
     )
 
 
@@ -493,41 +459,6 @@ def _load_social_config(social_block: dict) -> SocialConfig:
         reddit=reddit,
         forum=forum,
         x=x_config,
-    )
-
-
-def _load_options_config(options_block: dict) -> OptionsConfig:
-    return OptionsConfig(
-        enabled=_parse_bool(
-            _first_non_empty(
-                os.environ.get("OPTIONS_ENABLED"),
-                options_block.get("enabled"),
-            ),
-            default=False,
-        ),
-        provider=str(
-            _first_non_empty(
-                os.environ.get("OPTIONS_PROVIDER"),
-                options_block.get("provider"),
-                OptionsConfig().provider,
-            )
-        ),
-        require_greeks=_parse_bool(
-            _first_non_empty(
-                os.environ.get("OPTIONS_REQUIRE_GREEKS"),
-                options_block.get("require_greeks"),
-                OptionsConfig().require_greeks,
-            ),
-            default=OptionsConfig().require_greeks,
-        ),
-        max_contracts=_parse_non_negative_int(
-            _first_non_empty(
-                os.environ.get("OPTIONS_MAX_CONTRACTS"),
-                options_block.get("max_contracts"),
-                OptionsConfig().max_contracts,
-            ),
-            OptionsConfig().max_contracts,
-        ),
     )
 
 

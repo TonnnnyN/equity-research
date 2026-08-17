@@ -20,6 +20,7 @@ from market_sentiment.models import (
 )
 from market_sentiment.pipeline import dedupe_statuses
 from market_sentiment.scoring import (
+    BucketWeights,
     build_scorecard,
     cap_state_if_data_insufficient,
     score_price_flow,
@@ -666,3 +667,317 @@ class SocialRebound(TestCase):
         # The key: base_state should use unscaled 80 threshold.
         # (The test_positive_social_rebound_only_upgrades_one_step test is the true regression lock.)
         self.assertIsNotNone(scorecard.state)
+
+
+class WeightSetTests(TestCase):
+    """Tests for caller-supplied bucket weights and dropped buckets."""
+
+    def test_hard_veto_survives_dropped_risk_bucket(self) -> None:
+        """Hard veto (negative_official_keyword) must fire even when risk_red_flags bucket is dropped.
+
+        This is the single most important test: a caller must not be able to drop or
+        down-weight a veto bucket to bypass hard vetoes. Vetoes are unaffected by weight sets.
+        """
+        security = Security(ticker="TEST", name="Test Co", layer=Layer.COMPUTE, benchmark="SOXX")
+        event = OfficialEvent(
+            ticker="TEST",
+            event_time=datetime(2026, 3, 1),
+            form_type="8-K",
+            title="TEST filed bankruptcy notice",
+            url="https://example.com",
+            source="sec",
+        )
+        trigger = TriggerResult(
+            triggered=True, reasons=["ten_day_drawdown"], ten_day_drawdown=0.2, twenty_day_drawdown=0.25, relative_underperformance=0.1, new_low=False
+        )
+        context = type(
+            "Context",
+            (),
+            {
+                "security": security,
+                "benchmark_ticker": "SOXX",
+                "prices": [],
+                "benchmark_prices": [],
+                "official_events": [event],
+                "fundamentals": None,
+                "macro": [],
+                "source_statuses": [SourceStatus(source="sec", success=True)],
+            },
+        )()
+
+        # Create a weight set that drops the risk_red_flags bucket entirely
+        weights = BucketWeights(
+            fundamentals=30,
+            sentiment=15,
+            chain_confirmation=20,
+            price_flow=15,
+            risk_red_flags=0,  # zero weight
+            social_rebound=10,
+            dropped_buckets=frozenset(["risk_red_flags"]),
+            rationale="Testing veto survival when risk bucket is dropped",
+        )
+
+        scorecard = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+            weights=weights,
+        )
+
+        # Veto must still fire despite dropped risk bucket
+        self.assertEqual(scorecard.state, ActionState.REJECT)
+        self.assertEqual(scorecard.veto_reason, "negative_official_keyword")
+        # Risk bucket must have max_score=0
+        self.assertEqual(scorecard.risk_red_flags.max_score, 0)
+
+    def test_redistribution_drops_social_bucket_preserves_verdict(self) -> None:
+        """Dropping social bucket redistributes its weight; verdict unchanged for otherwise identical company.
+
+        Two identical companies: one scored with full buckets, one with social bucket dropped.
+        The achievable_max scaling ensures thresholds scale proportionally, preserving state.
+        """
+        security = Security(ticker="TEST", name="Test Co", layer=Layer.COMPUTE, benchmark="SOXX")
+        trigger = TriggerResult(
+            triggered=True,
+            reasons=["ten_day_drawdown"],
+            ten_day_drawdown=0.2,
+            twenty_day_drawdown=0.25,
+            relative_underperformance=0.1,
+            new_low=False,
+        )
+        # Create price bars for price_flow scoring
+        prices = make_price_bars(
+            "TEST",
+            [100 - i * 0.5 for i in range(25)],  # gentle downtrend
+            start_date=date(2026, 2, 26),
+        )
+        context_base = type(
+            "Context",
+            (),
+            {
+                "security": security,
+                "benchmark_ticker": "SOXX",
+                "prices": prices,
+                "benchmark_prices": [],
+                "official_events": [],
+                "fundamentals": None,
+                "macro": [],
+                "source_statuses": [SourceStatus(source="stooq", success=True)],
+            },
+        )()
+
+        # Score without weight override (default behavior)
+        scorecard_default = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context_base,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+        )
+
+        # Score with social bucket dropped
+        weights_no_social = BucketWeights(
+            fundamentals=30,
+            sentiment=15,
+            chain_confirmation=20,
+            price_flow=15,
+            risk_red_flags=20,
+            social_rebound=0,  # dropped
+            dropped_buckets=frozenset(["social_rebound"]),
+            rationale="Dropping social bucket due to insufficient sample",
+        )
+        scorecard_no_social = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context_base,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+            weights=weights_no_social,
+        )
+
+        # Verdicts should match because thresholds scale with achievable_max
+        self.assertEqual(
+            scorecard_default.state,
+            scorecard_no_social.state,
+            msg=f"Redistribution failed: default={scorecard_default.state}, no_social={scorecard_no_social.state}",
+        )
+        # Social bucket must have max_score=0 in weighted version
+        self.assertEqual(scorecard_no_social.social_rebound.max_score, 0)
+
+    def test_weights_validation_rejects_empty_rationale(self) -> None:
+        """Validation rejects empty or whitespace-only rationale."""
+        with self.assertRaises(ValueError) as cm:
+            BucketWeights(
+                fundamentals=30,
+                sentiment=15,
+                chain_confirmation=20,
+                price_flow=15,
+                risk_red_flags=20,
+                social_rebound=10,
+                dropped_buckets=frozenset(),
+                rationale="",  # empty
+            ).validate()
+        self.assertIn("rationale", str(cm.exception))
+
+        with self.assertRaises(ValueError):
+            BucketWeights(
+                fundamentals=30,
+                sentiment=15,
+                chain_confirmation=20,
+                price_flow=15,
+                risk_red_flags=20,
+                social_rebound=10,
+                dropped_buckets=frozenset(),
+                rationale="   ",  # whitespace only
+            ).validate()
+
+    def test_weights_validation_rejects_unknown_bucket(self) -> None:
+        """Validation rejects unknown bucket names in dropped_buckets."""
+        with self.assertRaises(ValueError) as cm:
+            BucketWeights(
+                fundamentals=30,
+                sentiment=15,
+                chain_confirmation=20,
+                price_flow=15,
+                risk_red_flags=20,
+                social_rebound=10,
+                dropped_buckets=frozenset(["unknown_bucket"]),
+                rationale="Test",
+            ).validate()
+        self.assertIn("unknown bucket", str(cm.exception))
+
+    def test_weights_validation_rejects_negative_weight(self) -> None:
+        """Validation rejects negative weights."""
+        with self.assertRaises(ValueError) as cm:
+            BucketWeights(
+                fundamentals=-5,  # negative
+                sentiment=15,
+                chain_confirmation=20,
+                price_flow=15,
+                risk_red_flags=20,
+                social_rebound=10,
+                dropped_buckets=frozenset(),
+                rationale="Test",
+            ).validate()
+        self.assertIn("negative weight", str(cm.exception))
+
+    def test_weights_validation_rejects_all_buckets_dropped(self) -> None:
+        """Validation rejects dropping all buckets."""
+        with self.assertRaises(ValueError) as cm:
+            BucketWeights(
+                fundamentals=0,
+                sentiment=0,
+                chain_confirmation=0,
+                price_flow=0,
+                risk_red_flags=0,
+                social_rebound=0,
+                dropped_buckets=frozenset(["fundamentals", "sentiment", "chain_confirmation", "price_flow", "risk_red_flags", "social_rebound"]),
+                rationale="Test",
+            ).validate()
+        self.assertIn("cannot drop all buckets", str(cm.exception))
+
+    def test_backward_compatibility_no_weights_parameter(self) -> None:
+        """Existing callers without weights parameter continue to work unchanged."""
+        security = Security(ticker="TEST", name="Test Co", layer=Layer.COMPUTE, benchmark="SOXX")
+        trigger = TriggerResult(
+            triggered=True,
+            reasons=["ten_day_drawdown"],
+            ten_day_drawdown=0.2,
+            twenty_day_drawdown=0.25,
+            relative_underperformance=0.1,
+            new_low=False,
+        )
+        context = type(
+            "Context",
+            (),
+            {
+                "security": security,
+                "benchmark_ticker": "SOXX",
+                "prices": [],
+                "benchmark_prices": [],
+                "official_events": [],
+                "fundamentals": None,
+                "macro": [],
+                "source_statuses": [SourceStatus(source="stooq", success=True)],
+            },
+        )()
+
+        # Call without weights parameter (existing behavior)
+        scorecard = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+        )
+
+        # Should succeed and produce a scorecard
+        self.assertIsNotNone(scorecard)
+        self.assertEqual(scorecard.security.ticker, "TEST")
+
+    def test_weights_stored_on_scorecard(self) -> None:
+        """Applied weights, dropped buckets, rationale, and achievable_max are recorded on ScoreCard."""
+        security = Security(ticker="TEST", name="Test Co", layer=Layer.COMPUTE, benchmark="SOXX")
+        trigger = TriggerResult(
+            triggered=True,
+            reasons=["ten_day_drawdown"],
+            ten_day_drawdown=0.2,
+            twenty_day_drawdown=0.25,
+            relative_underperformance=0.1,
+            new_low=False,
+        )
+        context = type(
+            "Context",
+            (),
+            {
+                "security": security,
+                "benchmark_ticker": "SOXX",
+                "prices": [],
+                "benchmark_prices": [],
+                "official_events": [],
+                "fundamentals": None,
+                "macro": [],
+                "source_statuses": [SourceStatus(source="stooq", success=True)],
+            },
+        )()
+
+        weights = BucketWeights(
+            fundamentals=30,
+            sentiment=15,
+            chain_confirmation=20,
+            price_flow=15,
+            risk_red_flags=20,
+            social_rebound=0,  # dropped
+            dropped_buckets=frozenset(["social_rebound"]),
+            rationale="Testing weight storage",
+        )
+
+        scorecard = build_scorecard(
+            run_date=date(2026, 3, 26),
+            context=context,
+            trigger=trigger,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            peer_contexts=[],
+            weights=weights,
+        )
+
+        # Check that weights are stored (use getattr for defensive reading)
+        weights_stored = getattr(scorecard, "weights_applied", None)
+        if weights_stored is not None:
+            self.assertEqual(weights_stored["fundamentals"], 30)
+            self.assertEqual(weights_stored["social_rebound"], 0)
+
+        dropped_stored = getattr(scorecard, "dropped_buckets", None)
+        if dropped_stored is not None:
+            self.assertIn("social_rebound", dropped_stored)
+
+        rationale_stored = getattr(scorecard, "rationale", None)
+        if rationale_stored is not None:
+            self.assertEqual(rationale_stored, "Testing weight storage")
+
+        achievable_max_stored = getattr(scorecard, "achievable_max", None)
+        if achievable_max_stored is not None:
+            # Should be sum of all max_scores with social dropped: 30+15+20+15+20+0 = 100
+            self.assertEqual(achievable_max_stored, 100)

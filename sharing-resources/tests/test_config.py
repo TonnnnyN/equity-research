@@ -161,20 +161,3 @@ max_posts = 15
         self.assertEqual(config.social.x.proxy_url, "http://proxy.local:8080")
         self.assertEqual(config.social.x.accounts_file, str(Path(tmp) / "accounts.txt"))
 
-    def test_load_config_parses_options_overrides_from_env(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            overrides = {
-                "MARKET_SENTIMENT_DATA_DIR": tmp,
-                "MARKET_SENTIMENT_DB_PATH": str(Path(tmp) / "market_sentiment.db"),
-                "OPTIONS_ENABLED": "true",
-                "OPTIONS_PROVIDER": "alpha_vantage",
-                "OPTIONS_REQUIRE_GREEKS": "true",
-                "OPTIONS_MAX_CONTRACTS": "80",
-            }
-            with patch.dict(os.environ, overrides, clear=False):
-                config = load_config(str(CONFIG_PATH))
-
-        self.assertTrue(config.options.enabled)
-        self.assertEqual(config.options.provider, "alpha_vantage")
-        self.assertTrue(config.options.require_greeks)
-        self.assertEqual(config.options.max_contracts, 80)

@@ -5,6 +5,33 @@ from datetime import date
 from typing import Any
 
 # ---------------------------------------------------------------------------
+# Model order — the caller's explicit decision: which models to run, with what
+# assumptions and for what reasons. Every model receives only the assumptions
+# that apply to it (keyed by model name).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DeclinedModel:
+    """A model deliberately NOT run, with the reason the caller chose not to run it."""
+
+    model: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class ModelOrder:
+    """The caller's instruction to run_order: exactly which models to compute, with
+    which per-model assumptions and why the caller made this choice. The order must be
+    valid (see run_order's validation) and every assumption required by a named model
+    must be supplied — a model never invents an assumption on its own."""
+
+    models: tuple[str, ...]  # exactly which model names to run (one of the 12)
+    assumptions: dict[str, Any]  # per-model assumption overrides, keyed by model name
+    rationale: str  # why the caller chose these — required, must be non-empty
+    declined: tuple[DeclinedModel, ...] = ()  # models deliberately NOT run, each with a reason
+
+# ---------------------------------------------------------------------------
 # Group labels — every ModelResult.group is one of these four constants.
 # ---------------------------------------------------------------------------
 
@@ -104,24 +131,39 @@ class RouterParams:
 @dataclass(slots=True)
 class ValuationModelReport:
     """The top-level object this module hands to a caller (and, later, to the review
-    packet). Layer 2 advisory evidence only — see LAYER_MARKER."""
+    packet). Layer 2 advisory evidence only — see LAYER_MARKER.
+
+    Structure: results contains only the models explicitly ordered; always_on contains
+    the four always-computed quality/risk metrics (piotroski_f_score, altman_z_score,
+    beneish_m_score, net_cash_floor), separate from results. Call run_order to
+    populate this report."""
 
     ticker: str
     as_of: date
-    router: RouterDecision
     results: list[ModelResult]
+    always_on: list[ModelResult] = field(default_factory=list)
     layer: str = LAYER_MARKER
+    order: ModelOrder | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return _to_jsonable(
-            {
-                "ticker": self.ticker,
-                "as_of": self.as_of,
-                "layer": self.layer,
-                "router": asdict(self.router),
-                "results": [result.to_dict() for result in self.results],
+        result_dict = {
+            "ticker": self.ticker,
+            "as_of": self.as_of,
+            "layer": self.layer,
+            "results": [result.to_dict() for result in self.results],
+            "always_on": [result.to_dict() for result in self.always_on],
+        }
+        if self.order is not None:
+            result_dict["order"] = {
+                "models": list(self.order.models),
+                "assumptions": self.order.assumptions,
+                "rationale": self.order.rationale,
+                "declined": [
+                    {"model": d.model, "reason": d.reason}
+                    for d in self.order.declined
+                ],
             }
-        )
+        return _to_jsonable(result_dict)
 
 
 def _to_jsonable(value: Any) -> Any:

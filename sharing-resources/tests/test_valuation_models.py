@@ -26,7 +26,7 @@ from market_sentiment.models import (
 from market_sentiment import valuation_models as vm
 from market_sentiment.valuation_models._math import bisect, gordon_growth_value, pv_growing_fcf_with_terminal_value
 from market_sentiment.valuation_models._scenarios import ScenarioParams
-from market_sentiment.valuation_models._types import RouterParams
+from market_sentiment.valuation_models._types import DeclinedModel, ModelOrder, RouterParams
 
 
 # ---------------------------------------------------------------------------
@@ -575,123 +575,174 @@ class ThreeScenarioExpectedValueTests(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Router
+# run_order — the new entry point
 # ---------------------------------------------------------------------------
 
-class RouterTests(TestCase):
-    def test_positive_stable_fcf_enables_dcf_variants(self) -> None:
+class RunOrderTests(TestCase):
+    def test_order_with_single_model_runs_only_that_model(self) -> None:
         security = _security("ZM", Layer.AI_APPLICATIONS)
-        derived = _derived(
-            ttm_fcf=100.0, enterprise_value=1000.0, market_cap=1200.0, net_cash=200.0,
-            non_operating_assets=10.0, shares_used=10.0,
-            beta=BetaEstimate(beta=None, observations=0, r_squared=None, reliable=False, reason="no data"),
+        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, shares_used=10.0)
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={"reverse_dcf": {"discount_rates": (0.10,)}},
+            rationale="Testing single model run",
         )
-        decision = vm.route(security, derived, None)
-        for name in ("reverse_dcf", "two_stage_dcf", "owner_earnings"):
-            self.assertIn(name, decision.enabled_models)
-        self.assertEqual(decision.profile.fcf_sign, "positive")
+        report = vm.run_order(security, order, derived, None, [], [])
+        # results should contain only reverse_dcf
+        self.assertEqual(len(report.results), 1)
+        self.assertEqual(report.results[0].model, "reverse_dcf")
+        self.assertEqual(report.results[0].status, vm.STATUS_OK)
 
-    def test_negative_fcf_disables_all_dcf_variants_and_enables_cash_runway(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        derived = _derived(ttm_fcf=-100.0, enterprise_value=1000.0, market_cap=1200.0, net_cash=200.0, shares_used=10.0)
-        decision = vm.route(security, derived, None)
-        excluded_names = {e["model"] for e in decision.excluded}
-        for name in ("reverse_dcf", "two_stage_dcf", "owner_earnings"):
-            self.assertIn(name, excluded_names)
-            self.assertNotIn(name, decision.enabled_models)
-        self.assertIn("cash_runway", decision.enabled_models)
-        # A DCF on a cash-burning company is self-deception — the reason must say so.
-        reasons = {e["model"]: e["reason"] for e in decision.excluded}
-        self.assertIn("self-deception", reasons["reverse_dcf"])
-
-    def test_negative_fcf_restricts_relative_valuation_multiples_to_ev_sales(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        derived = _derived(
-            ttm_fcf=-100.0, enterprise_value=1000.0, market_cap=1200.0, net_cash=200.0, shares_used=10.0,
-            ttm_revenue=500.0,
+    def test_order_raises_on_unknown_model_name(self) -> None:
+        order = ModelOrder(
+            models=("unknown_model",),
+            assumptions={},
+            rationale="Testing invalid model name",
         )
-        decision = vm.route(security, derived, None)
-        self.assertTrue(any("ev_sales" in note and "restricted" in note for note in decision.profile.notes))
+        security = _security()
+        derived = _derived()
+        with self.assertRaises(ValueError) as cm:
+            vm.run_order(security, order, derived, None, [], [])
+        self.assertIn("unknown", str(cm.exception).lower())
 
-        # Confirm the restriction actually reaches the model call, not just a note:
-        # own_history_percentile with a fixture that CAN resolve should only report ev_sales.
-        base = date(2026, 4, 30)
-        dates = [base - timedelta(days=91 * i) for i in range(8)]
-        revenue = _quarterly_history("revenue", "Revenues", [(d, 100.0) for d in dates])
-        cash = _quarterly_history("cash_and_equivalents", "CashAndCashEquivalentsAtCarryingValue", [(d, 0.0) for d in dates[:5]])
-        shares = _quarterly_history("diluted_weighted_avg_shares", "WeightedAverageNumberOfDilutedSharesOutstanding", [(d, 10.0) for d in dates[:5]])
-        fundamentals = _fundamentals({"revenue": revenue, "cash_and_equivalents": cash, "diluted_weighted_avg_shares": shares})
-        prices = _bars("TEST", [(d, 100.0 + i) for i, d in enumerate(dates[:5])])
-        full_derived = _derived(
-            ttm_fcf=-100.0, enterprise_value=1020.0, market_cap=1020.0, ttm_revenue=400.0, net_cash=200.0, shares_used=10.0,
+    def test_order_raises_on_empty_rationale(self) -> None:
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={},
+            rationale="",
         )
-        report = vm.evaluate(security, full_derived, fundamentals, prices)
-        own_history = next(r for r in report.results if r.model == "own_history_percentile")
-        self.assertEqual(own_history.status, vm.STATUS_OK, own_history.skip_reason)
-        self.assertEqual(own_history.assumptions.get("multiples_requested"), ["ev_sales"])
-        self.assertEqual(set(own_history.outputs["multiples"].keys()), {"ev_sales"})
+        security = _security()
+        derived = _derived()
+        with self.assertRaises(ValueError) as cm:
+            vm.run_order(security, order, derived, None, [], [])
+        self.assertIn("rationale", str(cm.exception).lower())
 
-    def test_high_net_cash_ratio_forces_sotp(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        # net_cash / market_cap = 500/1000 = 50% > 30% threshold
-        derived = _derived(ttm_fcf=100.0, enterprise_value=500.0, market_cap=1000.0, net_cash=500.0, shares_used=10.0)
-        decision = vm.route(security, derived, None)
-        self.assertGreater(decision.profile.net_cash_to_market_cap, 0.30)
-        self.assertIn("sum_of_the_parts", decision.enabled_models)
-        self.assertTrue(any("FORCED" in note for note in decision.profile.notes))
-
-    def test_material_non_operating_assets_forces_sotp(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        derived = _derived(
-            ttm_fcf=100.0, enterprise_value=900.0, market_cap=1000.0, net_cash=100.0,
-            non_operating_assets=100.0,  # 10% of market cap > 5% materiality threshold
-            shares_used=10.0,
+    def test_order_raises_on_whitespace_only_rationale(self) -> None:
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={},
+            rationale="   \t\n  ",
         )
-        decision = vm.route(security, derived, None)
-        self.assertGreater(decision.profile.non_operating_to_market_cap, 0.05)
-        self.assertIn("sum_of_the_parts", decision.enabled_models)
-        self.assertTrue(any("FORCED" in note for note in decision.profile.notes))
+        security = _security()
+        derived = _derived()
+        with self.assertRaises(ValueError) as cm:
+            vm.run_order(security, order, derived, None, [], [])
+        self.assertIn("rationale", str(cm.exception).lower())
 
-    def test_unreliable_beta_uses_sector_default_range_not_capm(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        unreliable_beta = BetaEstimate(beta=0.41, observations=125, r_squared=0.037, reliable=False, reason="unreliable")
-        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, beta=unreliable_beta)
-        decision = vm.route(security, derived, None)
-        self.assertEqual(decision.profile.discount_rate_method, "sector_default_range")
-        self.assertEqual(decision.profile.discount_rates, RouterParams().sector_default_discount_rates["ai_applications"])
-        self.assertGreater(len(decision.profile.discount_rates), 1)  # never a single point
+    def test_order_raises_on_unknown_assumption_key(self) -> None:
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={"unknown_model": {"discount_rates": (0.10,)}},
+            rationale="Testing unknown assumption key",
+        )
+        security = _security()
+        derived = _derived()
+        with self.assertRaises(ValueError) as cm:
+            vm.run_order(security, order, derived, None, [], [])
+        self.assertIn("unknown", str(cm.exception).lower())
 
-    def test_reliable_beta_derives_capm_range_not_a_single_point(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        reliable_beta = BetaEstimate(beta=1.2, observations=250, r_squared=0.45, reliable=True, reason=None)
-        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, beta=reliable_beta)
-        decision = vm.route(security, derived, None)
-        self.assertEqual(decision.profile.discount_rate_method, "capm_derived_range")
-        self.assertGreater(len(decision.profile.discount_rates), 1)  # still a range, not a point
+    def test_dcf_skips_when_discount_rate_not_supplied(self) -> None:
+        security = _security()
+        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, shares_used=10.0)
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={},  # no discount_rates provided
+            rationale="Testing missing discount rate",
+        )
+        report = vm.run_order(security, order, derived, None, [], [])
+        self.assertEqual(report.results[0].status, vm.STATUS_SKIPPED)
+        self.assertIn("discount rate", report.results[0].skip_reason)
 
-    def test_missing_altman_inputs_produce_named_skip_not_router_exclusion(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, market_cap=1200.0, net_cash=200.0, shares_used=10.0)
-        report = vm.evaluate(security, derived, _fundamentals({}), [])
-        altman = next(r for r in report.results if r.model == "altman_z_score")
-        self.assertEqual(altman.status, vm.STATUS_SKIPPED)
-        self.assertIn("total_assets", altman.skip_reason)
+    def test_two_stage_dcf_skips_when_discount_rate_not_supplied(self) -> None:
+        security = _security()
+        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, shares_used=10.0)
+        order = ModelOrder(
+            models=("two_stage_dcf",),
+            assumptions={},
+            rationale="Testing missing discount rate",
+        )
+        report = vm.run_order(security, order, derived, None, [], [])
+        self.assertEqual(report.results[0].status, vm.STATUS_SKIPPED)
+        self.assertIn("discount rate", report.results[0].skip_reason)
 
-    def test_every_model_appears_exactly_once_in_the_report(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, market_cap=1200.0, net_cash=200.0, shares_used=10.0)
-        report = vm.evaluate(security, derived, None, [])
-        names = [r.model for r in report.results]
-        self.assertEqual(sorted(names), sorted(vm.MODEL_NAMES))
-        self.assertEqual(len(names), len(set(names)))
+    def test_owner_earnings_skips_when_discount_rate_not_supplied(self) -> None:
+        security = _security()
+        derived = _derived(ttm_fcf=100.0, net_cash=50.0, shares_used=10.0)
+        order = ModelOrder(
+            models=("owner_earnings",),
+            assumptions={},
+            rationale="Testing missing discount rate",
+        )
+        report = vm.run_order(security, order, derived, None, [], [])
+        self.assertEqual(report.results[0].status, vm.STATUS_SKIPPED)
+        self.assertIn("discount rate", report.results[0].skip_reason)
 
-    def test_router_excluded_models_have_reason_prefixed(self) -> None:
-        security = _security("ZM", Layer.AI_APPLICATIONS)
-        derived = _derived(ttm_fcf=-10.0, enterprise_value=1000.0, market_cap=1200.0, net_cash=200.0, shares_used=10.0)
-        report = vm.evaluate(security, derived, None, [])
-        reverse = next(r for r in report.results if r.model == "reverse_dcf")
-        self.assertEqual(reverse.status, vm.STATUS_SKIPPED)
-        self.assertTrue(reverse.skip_reason.startswith("[router]"))
+    def test_always_on_metrics_appear_even_when_not_ordered(self) -> None:
+        security = _security()
+        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, shares_used=10.0)
+        # Order only reverse_dcf
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={"reverse_dcf": {"discount_rates": (0.10,)}},
+            rationale="Testing always-on metrics",
+        )
+        report = vm.run_order(security, order, derived, None, [], [])
+        # results contains only reverse_dcf
+        self.assertEqual(len(report.results), 1)
+        self.assertEqual(report.results[0].model, "reverse_dcf")
+        # always_on should contain the 4 always-on metrics (or skip reasons for them)
+        self.assertGreater(len(report.always_on), 0)
+        always_on_names = {r.model for r in report.always_on}
+        # Should include some of the always-on metrics
+        expected_always_on = {"piotroski_f_score", "altman_z_score", "beneish_m_score", "net_cash_floor"}
+        self.assertTrue(expected_always_on & always_on_names)
+
+    def test_always_on_metrics_not_duplicated_if_ordered(self) -> None:
+        security = _security()
+        derived = _derived(working_capital=200.0, ttm_operating_income=150.0, book_value=600.0)
+        fundamentals = _fundamentals({
+            "total_assets": _quarterly_history("total_assets", "Assets", [(date(2026, 6, 30), 1000.0)]),
+            "total_liabilities": _quarterly_history("total_liabilities", "Liabilities", [(date(2026, 6, 30), 400.0)]),
+            "retained_earnings": _quarterly_history("retained_earnings", "RetainedEarningsAccumulatedDeficit", [(date(2026, 6, 30), 300.0)]),
+        })
+        order = ModelOrder(
+            models=("altman_z_score",),
+            assumptions={},
+            rationale="Testing no duplication of altman",
+        )
+        report = vm.run_order(security, order, derived, fundamentals, [], [])
+        # altman should appear in results, not in always_on
+        result_models = {r.model for r in report.results}
+        always_on_models = {r.model for r in report.always_on}
+        self.assertIn("altman_z_score", result_models)
+        self.assertNotIn("altman_z_score", always_on_models)
+
+    def test_ordered_model_with_infeasible_data_returns_skip_with_factual_reason(self) -> None:
+        security = _security()
+        derived = _derived(ttm_fcf=-50.0, enterprise_value=1000.0)  # negative FCF
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={"reverse_dcf": {"discount_rates": (0.10,)}},
+            rationale="Testing infeasible model",
+        )
+        report = vm.run_order(security, order, derived, None, [], [])
+        result = report.results[0]
+        self.assertEqual(result.status, vm.STATUS_SKIPPED)
+        # The skip reason should be factual (about the data)
+        self.assertIn("<= 0", result.skip_reason)
+        self.assertIn("ttm_fcf", result.skip_reason)  # Should not advise to use other models
+
+    def test_report_carries_layer2_marker(self) -> None:
+        security = _security()
+        derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, shares_used=10.0)
+        order = ModelOrder(
+            models=("net_cash_floor",),
+            assumptions={},
+            rationale="Testing layer marker",
+        )
+        report = vm.run_order(security, order, derived, None, [], [])
+        self.assertEqual(report.layer, vm.LAYER_MARKER)
+        self.assertIn("advisory", report.layer)
 
 
 # ---------------------------------------------------------------------------
@@ -702,7 +753,12 @@ class LayerBoundaryTests(TestCase):
     def test_report_carries_the_layer2_marker(self) -> None:
         security = _security("ZM", Layer.AI_APPLICATIONS)
         derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, market_cap=1200.0, net_cash=200.0, shares_used=10.0)
-        report = vm.evaluate(security, derived, None, [])
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={"reverse_dcf": {"discount_rates": (0.10,)}},
+            rationale="Layer test",
+        )
+        report = vm.run_order(security, order, derived, None, [], [])
         self.assertEqual(report.layer, vm.LAYER_MARKER)
         self.assertIn("advisory", report.layer)
 
@@ -723,5 +779,10 @@ class LayerBoundaryTests(TestCase):
 
         security = _security("ZM", Layer.AI_APPLICATIONS)
         derived = _derived(ttm_fcf=100.0, enterprise_value=1000.0, market_cap=1200.0, net_cash=200.0, shares_used=10.0)
-        report = vm.evaluate(security, derived, None, [])
+        order = ModelOrder(
+            models=("reverse_dcf",),
+            assumptions={"reverse_dcf": {"discount_rates": (0.10,)}},
+            rationale="JSON safe test",
+        )
+        report = vm.run_order(security, order, derived, None, [], [])
         json.dumps(report.to_dict())  # must not raise

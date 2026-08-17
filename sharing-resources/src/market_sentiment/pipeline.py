@@ -8,13 +8,11 @@ from datetime import date, datetime, timedelta, timezone
 from market_sentiment.config import PRICE_HISTORY_TARGET_DAYS, ProjectConfig, load_config
 from market_sentiment.decision_tracker import DecisionAlert, evaluate_decision, load_decision_files
 from market_sentiment.http import HttpClient
-from market_sentiment.manual_agent_report import render_manual_agent_report
 from market_sentiment.models import (
     DailyRunReport,
     FundamentalSnapshot,
     Layer,
     MacroObservation,
-    OptionSnapshot,
     OfficialEvent,
     PipelineContext,
     PriceBar,
@@ -27,17 +25,11 @@ from market_sentiment.runtime_preflight import PreflightSummary, build_preflight
 from market_sentiment.scoring import build_scorecard, classify_event_tag
 from market_sentiment.valuation import compute_valuation_derived
 from market_sentiment.social_service import SocialSignalService
-from market_sentiment.subagent_sentiment import build_default_sentiment_judge
-from market_sentiment.sources.alpha_vantage import AlphaVantageClient
 from market_sentiment.sources.base import SourcePayload
 from market_sentiment.sources.analyst_targets import AnalystTargetsClient
 from market_sentiment.sources.earnings_calendar import EarningsCalendarClient
-from market_sentiment.sources.eia import EiaClient
-from market_sentiment.sources.options_alpha_vantage import AlphaVantageOptionsClient
-from market_sentiment.sources.fred import FredClient
 from market_sentiment.sources.sec import SecClient
 from market_sentiment.sources.stooq import StooqClient
-from market_sentiment.sources.tiger import TigerClient
 from market_sentiment.sources.yahoo_finance import YahooFinanceClient
 from market_sentiment.storage import Storage
 from market_sentiment.triggers import compute_trigger
@@ -82,20 +74,14 @@ class DailyPipeline:
         user_agent = os.environ.get("SEC_USER_AGENT", self.config.default_user_agent)
         self.http = HttpClient(user_agent)
         self.sec = SecClient(self.http, self.storage)
-        self.tiger = TigerClient(self.http, self.storage)
         self.yahoo = YahooFinanceClient(self.http, self.storage)
-        self.alpha_vantage = AlphaVantageClient(self.http, self.storage)
         self.stooq = StooqClient(self.http, self.storage)
-        self.fred = FredClient(self.http, self.storage)
-        self.eia = EiaClient(self.http, self.storage)
         self.earnings_calendar = EarningsCalendarClient(self.http, self.storage)
         self.analyst_targets = AnalystTargetsClient(self.http, self.storage)
-        self.options = AlphaVantageOptionsClient(self.http, self.storage, self.config.options)
         self.social = SocialSignalService(
             config=self.config,
             http=self.http,
             storage=self.storage,
-            sentiment_judge=build_default_sentiment_judge(),
         )
 
     def init_db(self) -> None:
@@ -342,7 +328,7 @@ class DailyPipeline:
             )
             triggered_scorecards.append(scorecard)
             review_packets[context.security.ticker] = build_review_packet(
-                decision_time, context, scorecard, peer_contexts=peer_contexts
+                decision_time, context, scorecard, peer_contexts=peer_contexts, storage=self.storage
             )
 
         report = DailyRunReport(
@@ -353,10 +339,6 @@ class DailyPipeline:
             source_statuses=dedupe_statuses(all_statuses + macro_statuses, decision_time),
         )
         self.storage.save_review_packets(run_date, review_packets)
-        self.storage.save_manual_agent_report(
-            run_date,
-            render_manual_agent_report(report, review_packets, decision_tracking_result),
-        )
         return report
 
     def _fetch_benchmarks(
@@ -747,7 +729,7 @@ class DailyPipeline:
         )
 
         # Build and return packet regardless of triggered state.
-        return build_review_packet(decision_time, context, scorecard)
+        return build_review_packet(decision_time, context, scorecard, storage=self.storage)
 
     @staticmethod
     def _failure_status(source: str, message: str) -> SourceStatus:

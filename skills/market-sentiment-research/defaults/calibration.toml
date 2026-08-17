@@ -1,0 +1,164 @@
+# Market Sentiment Research — AI-Editable Calibration
+#
+# This file holds calibration choices that the AI may edit freely: bucket weights,
+# action thresholds, sample-size gates, and valuation habits.
+#
+# CRITICAL: Every change must be git-committed with a reasoned message.
+# Changing this file changes future judgements on all tickers — it is not cosmetic.
+#
+# IMMUTABLE RULES (constraints on AI behaviour): See SKILL.md, which the AI reads but
+# cannot edit. The rules live there precisely because they are not editable in-session.
+# If you believe an immutable rule is wrong, state that in your report and let the owner decide.
+#
+# After any edit, run:
+#   git add defaults/calibration.toml
+#   git commit -m "Adjust <what changed> due to <outcome evidence: which tickers, what happened>"
+#
+# Evolution is driven by the decision tracker (invalidate_if / rerate_if) checking
+# against subsequent prices. Local opinion ("this weighting feels better") is drift
+# and must cite real outcomes.
+
+[buckets]
+# Bucket weights control how much each evidence lane contributes to the total score.
+# The achievable max is the sum of all weights; Python scales thresholds against it.
+# Total does not need to be 110 — it just needs to be consistent.
+#
+# MUTABLE: Weights may be adjusted per company, per run, with justification.
+# When a weight departs from the default, the agent must explain what about
+# this specific ticker warrants the change (e.g., "retail-sentiment-driven stock,
+# raising social_rebound from 10 to 14 and lowering chain_confirmation from 20 to 16").
+#
+# Change meaning: Raising a weight says "I expect this bucket to be more predictive
+# for this ticker." Lowering it says "for this ticker, this lane is less reliable."
+# Constant raising on good days and lowering on bad days is drift — watch for it.
+
+fundamentals = 30
+# Financial statements, cashflow, balance-sheet strength, filing recency.
+# Raise when: company just filed fresh 10-Q/10-K and balance sheet is transparent.
+# Lower when: financials are stale (>100 days old) or financial statements are hard to parse.
+
+risk_red_flags = 20
+# Veto triggers (bankruptcy, fraud, restatement), structural breaks (revenue collapse + negative OCF),
+# late forms (NT 10-K, NT 10-Q), ongoing official red-flag keywords.
+# Raise when: company has history of late filings or undisclosed events.
+# Lower when: risk lane is consistently silent and you want to let other evidence shine through.
+
+chain_confirmation = 20
+# Sector/market context, peer comparison, macro, options skew.
+# Raise when: this is an idiosyncratic dip in a strong sector (isolated_dip signal).
+# Lower when: the whole sector or market is crashing (event_tag = MARKET_WIDE or SECTOR_WIDE).
+
+sentiment = 15
+# Official disclosure tone (earnings, guidance, 8-K language), filing recency freshness.
+# Raise when: company communicates frequently via 8-K, earnings releases, or investor updates.
+# Lower when: last official update was >45 days ago and language is stale.
+
+price_flow = 15
+# Post-drop price action: stabilization, moving-average reclaim, close location in range.
+# Raise when: you want to reward intraday stabilization and early bounce signals.
+# Lower when: price action is noisy and you have strong evidence from other lanes.
+
+social_rebound = 10
+# Retail sentiment from Twitter, Reddit, StockTwits. Only scored when sample is sufficient.
+# This bucket's max_score becomes 0 when sample is thin; weight is redistributed to others.
+# Raise when: retail sentiment historically moves this stock; you have confirmed this correlation.
+# Lower when: retail is often late or wrong on this particular ticker.
+
+[thresholds]
+# Action thresholds define boundaries on a 110-point scale (all buckets present).
+# Python scales these based on achievable_max (the sum of weights actually present).
+# The mapping uses < (less-than) comparisons, so each threshold is the LOWER BOUND
+# of the stated action, not the upper bound. See scoring.py map_state() for the logic.
+#
+# MUTABLE: Thresholds may be tightened (raise the bar) or loosened (lower the bar)
+# when outcome evidence shows the current thresholds are systematically too lenient or strict.
+# Change meaning: Raising thresholds (reject at 67 instead of 65) says "be more selective."
+# Lowering them says "the signal is earlier than we thought."
+# Without outcome evidence from the decision tracker, threshold changes are drift.
+
+reject = 65
+# ActionState.REJECT if score < this value. Hard veto reasons (negative keywords, structural break)
+# also force REJECT regardless of score.
+
+watch = 72
+# ActionState.WATCH if score >= reject (65) and < this value.
+
+starter = 80
+# ActionState.STARTER if score >= watch (72) and < this value.
+
+add = 80
+# ActionState.ADD if score >= this value (unless blocked by guardrails or valuation gate).
+# The valuation gate is one-directional: valuation may downgrade ADD → STARTER, never raise WATCH → ADD.
+
+[social_bucket]
+# Social evidence only scores when the sample size meets this minimum.
+# If the sample is smaller (insufficient_data flag set), the bucket max becomes 0 and
+# its weight is redistributed to other buckets; Python already handles the redistribution.
+# MUTABLE: This threshold may be lowered if you get better outcomes at smaller samples,
+# or raised if you keep getting false positives from thin social data.
+# Change meaning: Lowering it (from, say, ~100 posts to ~50) says "micro-samples are valid."
+# Raising it says "wait for a bigger signal."
+
+minimum_observations = 20
+# Minimum social sample size to score the social_rebound bucket.
+# If observed posts < this number, the bucket max becomes 0 and its weight redistributes.
+# Rationale: 20 posts is above the noise floor for daily social samples (single tickers
+# routinely yield 0-15 posts; Zoom's historical 388 records across 7 years = ~11/week),
+# yet low enough to capture real movement on less-liquid tickers. This is a starting
+# point; the AI is expected to revise it upward or downward based on outcome tracking
+# (e.g., if 20-post samples consistently deliver false positives, raise to 30; if they
+# consistently miss early signals, lower to 15). Revisions must cite which tickers
+# triggered the change and what their outcomes were.
+
+[valuation_habits]
+# Discount-rate ranges and growth assumptions by business character, not industry label.
+# These are habits: when you don't have a specific reason to deviate, use these.
+# They are calibrated from historical Zoom, Nvidia, and similar companies.
+#
+# UNIT CONVENTION: All percentages are expressed as decimals (0.09 = 9%, 0.11 = 11%).
+# This applies to discount_rate_range and terminal_growth throughout this section.
+#
+# MUTABLE: Habits may change when you see consistent outcomes that prove the old
+# habit wrong. Example: "recurring-revenue SaaS with <10% customer concentration should
+# use 0.08-0.13 range; we kept running 0.09-0.13 and always ended up below the base case,
+# so moving to 0.08-0.11 to reflect the market's pricing."
+# Change meaning: Widening a range (0.09-0.13 to 0.08-0.14) says "I need more uncertainty."
+# Narrowing it says "this range was too wide and all models converged at one end."
+
+[valuation_habits."recurring_revenue_low_concentration"]
+# Revenue recurring (subscription/support contracts ≥60% of total), no single customer >10%.
+description = "Recurring revenue, low customer concentration (e.g., SaaS, recurring services)"
+discount_rate_range = [0.09, 0.11, 0.13]
+# Rationale: SaaS with strong switching costs and pricing power. Three-point range for CAPM-derived,
+# widened if beta is unreliable. Base rate of 0.11 (11%) is market-consensus SaaS rate.
+# Raise the range if company is pre-profitable or burning cash. Lower if generating free cash flow.
+# All values expressed as decimals: 0.09 = 9%, 0.11 = 11%, 0.13 = 13%.
+
+terminal_growth = 0.03
+# Perpetual growth in terminal year (expressed as decimal: 0.03 = 3%). SaaS matures at GDP-ish rates.
+# Adjust if company is in a high-growth vertical (AI, biotech) or in declining category.
+
+[valuation_habits."cyclical_industrial"]
+# Revenue lumpy or tied to capex cycles; customer concentration varies.
+description = "Cyclical industrial, moderate customer concentration (e.g., capital equipment)"
+discount_rate_range = [0.10, 0.12, 0.14]
+# Rationale: Capex cycles and procurement lumpiness make forecasts less stable. Widen the range
+# to accommodate higher uncertainty. Three-point range for historical volatility.
+# All values expressed as decimals: 0.10 = 10%, 0.12 = 12%, 0.14 = 14%.
+
+terminal_growth = 0.02
+# Conservative; cyclicals mature at below-GDP rates as competitive pressure normalizes.
+# Expressed as decimal: 0.02 = 2%.
+
+[valuation_habits."turnaround_high_debt"]
+# Negative or near-zero FCF; debt load >3x EBITDA; survival thesis.
+description = "Turnaround with high leverage, unclear path to FCF positivity"
+discount_rate_range = [0.14, 0.16, 0.18]
+# Rationale: High execution risk and balance-sheet stress. Use a high range to force
+# conservatism in the model. Do not run DCF in these cases; prefer net_cash_floor,
+# sum_of_the_parts, and the four always-on metrics only.
+# All values expressed as decimals: 0.14 = 14%, 0.16 = 16%, 0.18 = 18%.
+
+terminal_growth = 0.00
+# Assume zero terminal growth; these businesses must earn their way to stability first.
+# Expressed as decimal: 0.00 = 0%.
