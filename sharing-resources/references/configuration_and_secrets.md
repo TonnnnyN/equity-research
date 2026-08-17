@@ -5,16 +5,10 @@
 The CLI reads local runtime configuration from:
 
 ```text
-config/watchlist.toml
+config/default.toml
 ```
 
-The portable default copy lives at:
-
-```text
-skills/market-sentiment-research/defaults/watchlist.toml
-```
-
-If the local runtime config changes in a durable way, update the default copy when it should ship with the skill.
+This is the live runtime config used by the CLI. Update it when configuration changes need to persist across runs.
 
 ## Main Environment Variables
 
@@ -84,19 +78,19 @@ Options:
 Actual local keys and credentials belong in:
 
 ```text
-sharing-resources/secrets/market_sentiment.secrets.sh
+sharing-resources/secrets/equity_research.secrets.sh
 ```
 
 Load it with:
 
 ```bash
-source sharing-resources/secrets/market_sentiment.secrets.sh
+source sharing-resources/secrets/equity_research.secrets.sh
 ```
 
 Keep placeholder examples in:
 
 ```text
-sharing-resources/secrets/market_sentiment.secrets.example.sh
+sharing-resources/secrets/equity_research.secrets.example.sh
 ```
 
 ## Git Hygiene

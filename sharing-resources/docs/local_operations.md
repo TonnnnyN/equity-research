@@ -19,28 +19,65 @@ python3 -m pip install -e ".[social]"
 Real credentials live in:
 
 ```bash
-sharing-resources/secrets/market_sentiment.secrets.sh
+sharing-resources/secrets/equity_research.secrets.sh
 ```
 
 Source them before running commands that need API keys or social/email credentials:
 
 ```bash
-source sharing-resources/secrets/market_sentiment.secrets.sh
+source sharing-resources/secrets/equity_research.secrets.sh
 ```
 
 Do not paste secret values into docs, tests, references, or final answers.
 
-## Daily Run
+## Common Commands
+
+Validate configuration:
 
 ```bash
-market-sentiment --config config/watchlist.toml preflight
-market-sentiment --config config/watchlist.toml run-daily
+equity-research --config config/default.toml preflight
 ```
 
-For a specific date:
+Run a deep review on one or more tickers:
 
 ```bash
-market-sentiment --config config/watchlist.toml run-daily --date 2026-03-26
+equity-research --config config/default.toml review ZM NVDA AMZN
+```
+
+Run an ad-hoc review on a single ticker:
+
+```bash
+equity-research --config config/default.toml review-ticker IRTC --name "iRobot"
+```
+
+Place a valuation model order:
+
+```bash
+equity-research --config config/default.toml valuation-order TICKER --order order.json --portrait portrait.json
+```
+
+Check open decisions against fresh prices:
+
+```bash
+equity-research --config config/default.toml check-decisions
+```
+
+Show a saved report by date:
+
+```bash
+equity-research --config config/default.toml show-report --date 2026-08-17
+```
+
+Clean up old data by retention policy:
+
+```bash
+equity-research --config config/default.toml cleanup-data
+```
+
+Initialize the database (first run only):
+
+```bash
+equity-research --config config/default.toml init-db
 ```
 
 ## Reports

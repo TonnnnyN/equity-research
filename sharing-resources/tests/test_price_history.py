@@ -16,17 +16,17 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.config import PRICE_HISTORY_TARGET_DAYS, load_config
-from market_sentiment.models import PriceBar, SourceStatus
-from market_sentiment.pipeline import DailyPipeline
-from market_sentiment.sources.base import SourcePayload
+from equity_research.config import PRICE_HISTORY_TARGET_DAYS, load_config
+from equity_research.models import PriceBar, SourceStatus
+from equity_research.pipeline import DailyPipeline
+from equity_research.sources.base import SourcePayload
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "watchlist.toml"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.toml"
 
 
 def _make_pipeline(tmp: str) -> DailyPipeline:
-    os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp
-    os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp) / "market_sentiment.db")
+    os.environ["EQUITY_RESEARCH_DATA_DIR"] = tmp
+    os.environ["EQUITY_RESEARCH_DB_PATH"] = str(Path(tmp) / "equity_research.db")
     pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
     pipeline.storage.init_db()
     return pipeline

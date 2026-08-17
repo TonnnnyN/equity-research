@@ -20,7 +20,7 @@ the runtime engine is still reusable by a future screening Skill, not because on
 
 ## Scope
 
-`market-sentiment-research` is a research-decision workflow. It can end with `Reject`, `Watch`, `Starter`, `Add`, or `Exit`.
+`equity-research-research` is a research-decision workflow. It can end with `Reject`, `Watch`, `Starter`, `Add`, or `Exit`.
 
 ## Why Sharing Resources
 

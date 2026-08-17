@@ -5,10 +5,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.models import PriceBar, SourceStatus
-from market_sentiment.sources.base import SourcePayload
-from market_sentiment.sources.yahoo_finance import YahooFinanceClient
-from market_sentiment.storage import Storage
+from equity_research.models import PriceBar, SourceStatus
+from equity_research.sources.base import SourcePayload
+from equity_research.sources.yahoo_finance import YahooFinanceClient
+from equity_research.storage import Storage
 
 
 class FakeResponse:

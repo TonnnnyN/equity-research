@@ -4,9 +4,9 @@ from datetime import date, datetime, timezone
 from unittest import TestCase
 from unittest.mock import MagicMock, patch
 
-from market_sentiment.config import EmailDeliveryConfig
-from market_sentiment.email_delivery import build_report_message, send_report_email
-from market_sentiment.models import DailyRunReport
+from equity_research.config import EmailDeliveryConfig
+from equity_research.email_delivery import build_report_message, send_report_email
+from equity_research.models import DailyRunReport
 
 
 class EmailDeliveryTests(TestCase):
@@ -31,7 +31,7 @@ class EmailDeliveryTests(TestCase):
             subject_prefix="Daily Market Sentiment",
         )
 
-        with patch("market_sentiment.email_delivery.smtplib.SMTP") as smtp_cls:
+        with patch("equity_research.email_delivery.smtplib.SMTP") as smtp_cls:
             smtp_instance = MagicMock()
             smtp_cls.return_value.__enter__.return_value = smtp_instance
 

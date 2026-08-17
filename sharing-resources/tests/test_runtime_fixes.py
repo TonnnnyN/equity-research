@@ -9,14 +9,14 @@ from unittest import TestCase
 from unittest.mock import patch, MagicMock
 from urllib.error import HTTPError
 
-from market_sentiment.config import load_config
-from market_sentiment.models import Benchmark, FundamentalSnapshot, Layer, OfficialEvent, PriceBar, Security, SourceStatus
-from market_sentiment.pipeline import DailyPipeline
-from market_sentiment.sources.base import SourcePayload
-from market_sentiment.http import HttpClient
+from equity_research.config import load_config
+from equity_research.models import Benchmark, FundamentalSnapshot, Layer, OfficialEvent, PriceBar, Security, SourceStatus
+from equity_research.pipeline import DailyPipeline
+from equity_research.sources.base import SourcePayload
+from equity_research.http import HttpClient
 
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "watchlist.toml"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.toml"
 
 
 def make_price_bars(ticker: str, closes: list[float], start: date = date(2026, 3, 1)) -> list[PriceBar]:
@@ -39,11 +39,11 @@ def make_price_bars(ticker: str, closes: list[float], start: date = date(2026, 3
 
 def make_pipeline(tmp_dir: str) -> tuple[DailyPipeline, dict[str, str | None]]:
     old_env = {
-        "MARKET_SENTIMENT_DATA_DIR": os.environ.get("MARKET_SENTIMENT_DATA_DIR"),
-        "MARKET_SENTIMENT_DB_PATH": os.environ.get("MARKET_SENTIMENT_DB_PATH"),
+        "EQUITY_RESEARCH_DATA_DIR": os.environ.get("EQUITY_RESEARCH_DATA_DIR"),
+        "EQUITY_RESEARCH_DB_PATH": os.environ.get("EQUITY_RESEARCH_DB_PATH"),
     }
-    os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp_dir
-    os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp_dir) / "market_sentiment.db")
+    os.environ["EQUITY_RESEARCH_DATA_DIR"] = tmp_dir
+    os.environ["EQUITY_RESEARCH_DB_PATH"] = str(Path(tmp_dir) / "equity_research.db")
     config = load_config(str(CONFIG_PATH))
     config.securities = [Security(ticker="NVDA", name="NVIDIA", layer=Layer.COMPUTE, benchmark="SOXX")]
     config.benchmarks = {"SOXX": Benchmark(ticker="SOXX", name="SOXX")}
@@ -62,7 +62,7 @@ def restore_env(old_env: dict[str, str | None]) -> None:
 
 class RuntimeFixTests(TestCase):
     def test_http_client_retries_on_5xx_then_succeeds(self) -> None:
-        import market_sentiment.http
+        import equity_research.http
         attempt_count = [0]
 
         class MockResponse:
@@ -84,8 +84,8 @@ class RuntimeFixTests(TestCase):
             # Third attempt succeeds
             return MockResponse(200, b'{"result": "success"}')
 
-        with patch.object(market_sentiment.http, "_RETRY_BACKOFF_SECONDS", (0, 0)):
-            with patch.object(market_sentiment.http, "urlopen", side_effect=mock_urlopen):
+        with patch.object(equity_research.http, "_RETRY_BACKOFF_SECONDS", (0, 0)):
+            with patch.object(equity_research.http, "urlopen", side_effect=mock_urlopen):
                 client = HttpClient("test-ua")
                 response = client.get("https://example.com/x")
 
@@ -93,7 +93,7 @@ class RuntimeFixTests(TestCase):
                 self.assertEqual(attempt_count[0], 3)
 
     def test_http_client_does_not_retry_on_4xx(self) -> None:
-        import market_sentiment.http
+        import equity_research.http
         attempt_count = [0]
 
         def mock_urlopen(request, timeout=None, context=None):
@@ -101,8 +101,8 @@ class RuntimeFixTests(TestCase):
             # Always fail with 404
             raise HTTPError("https://example.com/x", 404, "Not Found", {}, None)
 
-        with patch.object(market_sentiment.http, "_RETRY_BACKOFF_SECONDS", (0, 0)):
-            with patch.object(market_sentiment.http, "urlopen", side_effect=mock_urlopen):
+        with patch.object(equity_research.http, "_RETRY_BACKOFF_SECONDS", (0, 0)):
+            with patch.object(equity_research.http, "urlopen", side_effect=mock_urlopen):
                 client = HttpClient("test-ua")
                 with self.assertRaises(RuntimeError) as cm:
                     client.get("https://example.com/x")

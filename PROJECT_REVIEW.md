@@ -869,13 +869,13 @@ orchestrator(我)→ Haiku subagent 矩阵:
 
 ## 一、项目概览
 
-本项目是一套**美股回调复核系统**，用于在市场收盘后检测持仓或候选股是否出现相对同行/基准的异常跌幅，若触发阈值则自动采集多维度证据（官方披露、财报数据、宏观指标、社交情绪、期权数据），经规则引擎打分后输出可执行的投资决策建议。
+本项目是一套**美股深度研究系统**，基于 SEC 财务数据、官方披露、估值模型和规则引擎为单只股票生成证据包并输出投资决策建议，不限制价格水平或跌幅触发条件。
 
 ### 两个 Skill 定位
 
 | Skill | 目录 | 定位 | 输出档位 |
 |---|---|---|---|
-| `market-sentiment-research` | `skills/market-sentiment-research/` | **单股深度复核**：针对已触发异常跌幅的特定股票，完整跑 5 条证据 lane，输出带 `invalidate_if` / `rerate_if` 的行动建议 | Reject / Watch / Starter / Add / Exit（5 档） |
+| `equity-research` | `skills/equity-research/` | **单股深度研究**：任意价格水平，完整跑 5 条证据 lane + 12 模型估值层，输出带 `invalidate_if` / `rerate_if` 的行动建议 | Reject / Watch / Starter / Add / Exit（5 档） |
 | `us-smallmid-dislocation` | `skills/us-smallmid-dislocation/` | **小中盘宽表筛选**：在候选股票宇宙中批量过滤，找出值得深入研究的错价标的，输出候选排名 | Pass / Watchlist / Investigate（3 档） |
 
 两个 skill 共享 `sharing-resources/` 下的全部 Python 库、配置、测试和文档。
@@ -893,12 +893,12 @@ orchestrator(我)→ Haiku subagent 矩阵:
 │   └── watchlist.toml                 # 监控股票列表（ticker + 基准 ETF 映射）
 │
 ├── skills/
-│   ├── market-sentiment-research/
+│   ├── equity-research/
 │   │   ├── SKILL.md                   # Skill 说明（Claude Code 读取）
-│   │   ├── defaults/targets.toml      # 默认研究对象配置
+│   │   ├── defaults/                  # 默认配置
 │   │   ├── references/                # Skill 级别参考文档
+│   │   ├── docs/                      # 设计笔记
 │   │   └── scripts/
-│   │       └── update_price_cache.py  # 用 Yahoo Chart API 拉取日线缓存（371 行，无需 key）
 │   │
 │   └── us-smallmid-dislocation/
 │       ├── SKILL.md                   # Skill 说明
@@ -934,7 +934,7 @@ orchestrator(我)→ Haiku subagent 矩阵:
     │   └── test_storage.py
     └── src/market_sentiment/          # 核心 Python 库
         ├── __main__.py                # 包入口
-        ├── cli.py                     # CLI 命令：init-db / preflight / run-daily / show-report / cleanup-data
+        ├── cli.py                     # CLI 命令：init-db / preflight / review / review-ticker / valuation-order / show-report / cleanup-data
         ├── config.py                  # 配置解析（读 TOML + 环境变量）
         ├── models.py                  # 数据模型（dataclass：PipelineContext, ScoreCard, SocialPost …）
         ├── pipeline.py                # 主 pipeline 编排（触发→采集→评分→输出）

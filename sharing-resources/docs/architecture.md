@@ -7,12 +7,12 @@ This project is organized as one Agent Skill plus a shared resource area.
 ```text
 市场情绪/
   skills/
-    market-sentiment-research/
+    equity-research/
   sharing-resources/
     docs/
     references/
     scripts/
-    src/market_sentiment/
+    src/equity_research/
     tests/
     examples/
     secrets/
@@ -25,9 +25,9 @@ This project is organized as one Agent Skill plus a shared resource area.
 
 Each `skills/<name>/SKILL.md` is the agent-facing entry point for one workflow.
 
-`skills/market-sentiment-research/` owns single-name or short-list pullback research, target-pool defaults, price-cache refresh, and `Reject / Watch / Starter / Add / Exit` decisions.
+`skills/equity-research/` owns single-name or short-list equity research at any price level, SEC-sourced fundamentals, twelve-model valuation layer, and `Reject / Watch / Starter / Add / Exit` decisions.
 
-`sharing-resources/src/market_sentiment/` is the runtime engine. It owns CLI parsing, config loading, source clients, pipeline orchestration, scoring, report generation, review packet generation, storage, and preflight checks.
+`sharing-resources/src/equity_research/` is the runtime engine. It owns CLI parsing, config loading, source clients, pipeline orchestration, scoring, report generation, review packet generation, storage, and preflight checks.
 
 `sharing-resources/scripts/` contains shared deterministic helpers such as JSON redaction.
 
@@ -35,7 +35,7 @@ Each `skills/<name>/SKILL.md` is the agent-facing entry point for one workflow.
 
 `sharing-resources/docs/` contains project-level design and operating context.
 
-`config/watchlist.toml` remains the local runtime config used by the CLI.
+`config/default.toml` remains the local runtime config used by the CLI.
 
 `data/` is generated output and cache. It can be inspected for a concrete run, but it is not source code or skill instruction.
 
@@ -45,7 +45,7 @@ Each `skills/<name>/SKILL.md` is the agent-facing entry point for one workflow.
 
 ```mermaid
 flowchart LR
-  A["config/watchlist.toml"] --> B["market_sentiment.config"]
+  A["config/default.toml"] --> B["equity_research.config"]
   B --> C["DailyPipeline"]
   C --> D["Data sources"]
   D --> E["SQLite storage"]
@@ -56,7 +56,7 @@ flowchart LR
 
 ## Key Runtime Modules
 
-- `cli.py`: command entry point for `init-db`, `preflight`, `run-daily`, `show-report`, and `cleanup-data`.
+- `cli.py`: command entry point for `init-db`, `preflight`, `review`, `review-ticker`, `valuation-order`, `show-report`, and `cleanup-data`.
 - `pipeline.py`: orchestration layer for benchmarks, securities, macro data, official events, social signals, options, valuation fundamentals, scoring, and outputs.
 - `config.py`: TOML plus environment-variable configuration loader.
 - `sources/`: SEC, Alpha Vantage, Stooq, FRED, EIA, Reddit, forum, X, and options clients.

@@ -2,7 +2,7 @@
 
 Complements test_analyst_targets.py (which exercises everything through the public
 AnalystTargetsClient.fetch_analyst_snapshot path) with direct, no-HTTP-at-all tests
-against Storage and the pure helper functions in market_sentiment.sources.analyst_targets.
+against Storage and the pure helper functions in equity_research.sources.analyst_targets.
 """
 from __future__ import annotations
 
@@ -11,19 +11,19 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.models import (
+from equity_research.models import (
     AnalystConsensusSnapshotRow,
     AnalystRatingActionRow,
     PriceBar,
 )
-from market_sentiment.sources.analyst_targets import (
+from equity_research.sources.analyst_targets import (
     compute_days_since_changed,
     compute_dispersion,
     compute_pct_change,
     find_snapshot_at_or_before,
     summarize_recent_actions,
 )
-from market_sentiment.storage import Storage
+from equity_research.storage import Storage
 
 
 def _make_storage(tmp: str) -> Storage:

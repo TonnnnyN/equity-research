@@ -1,4 +1,4 @@
-"""Tests for market_sentiment.valuation_models — the valuation MODEL layer built on
+"""Tests for equity_research.valuation_models — the valuation MODEL layer built on
 top of valuation.py's derived-inputs layer.
 
 No live network: everything here is pure computation over in-memory ValuationDerived
@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from unittest import TestCase
 
-from market_sentiment.models import (
+from equity_research.models import (
     BetaEstimate,
     ConceptDatapoint,
     ConceptHistory,
@@ -23,10 +23,10 @@ from market_sentiment.models import (
     ValuationDerived,
     ValuationFundamentals,
 )
-from market_sentiment import valuation_models as vm
-from market_sentiment.valuation_models._math import bisect, gordon_growth_value, pv_growing_fcf_with_terminal_value
-from market_sentiment.valuation_models._scenarios import ScenarioParams
-from market_sentiment.valuation_models._types import DeclinedModel, ModelOrder, RouterParams
+from equity_research import valuation_models as vm
+from equity_research.valuation_models._math import bisect, gordon_growth_value, pv_growing_fcf_with_terminal_value
+from equity_research.valuation_models._scenarios import ScenarioParams
+from equity_research.valuation_models._types import DeclinedModel, ModelOrder, RouterParams
 
 
 # ---------------------------------------------------------------------------
@@ -763,11 +763,11 @@ class LayerBoundaryTests(TestCase):
         self.assertIn("advisory", report.layer)
 
     def test_module_does_not_import_scoring_or_pipeline_or_review_packets(self) -> None:
-        import market_sentiment.valuation_models as package
+        import equity_research.valuation_models as package
 
-        forbidden = {"market_sentiment.scoring", "market_sentiment.pipeline", "market_sentiment.review_packets"}
+        forbidden = {"equity_research.scoring", "equity_research.pipeline", "equity_research.review_packets"}
         for module_name, module in list(__import__("sys").modules.items()):
-            if module_name.startswith("market_sentiment.valuation_models") and module is not None:
+            if module_name.startswith("equity_research.valuation_models") and module is not None:
                 imported = getattr(module, "__dict__", {})
                 for value in imported.values():
                     module_of_value = getattr(value, "__module__", None)

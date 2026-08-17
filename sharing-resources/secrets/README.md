@@ -7,12 +7,12 @@ Tracked files in this folder must contain placeholders only. Actual secret files
 Default local secret file:
 
 ```bash
-source sharing-resources/secrets/market_sentiment.secrets.sh
+source sharing-resources/secrets/equity_research.secrets.sh
 ```
 
 Example template:
 
 ```bash
-cp sharing-resources/secrets/market_sentiment.secrets.example.sh sharing-resources/secrets/market_sentiment.secrets.sh
-chmod 600 sharing-resources/secrets/market_sentiment.secrets.sh
+cp sharing-resources/secrets/equity_research.secrets.example.sh sharing-resources/secrets/equity_research.secrets.sh
+chmod 600 sharing-resources/secrets/equity_research.secrets.sh
 ```

@@ -11,10 +11,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.models import AnalystSnapshot, SourceStatus
-from market_sentiment.sources.analyst_targets import AnalystTargetsClient, fetch_yahoo_cookie_and_crumb
-from market_sentiment.sources.base import SourcePayload
-from market_sentiment.storage import Storage
+from equity_research.models import AnalystSnapshot, SourceStatus
+from equity_research.sources.analyst_targets import AnalystTargetsClient, fetch_yahoo_cookie_and_crumb
+from equity_research.sources.base import SourcePayload
+from equity_research.storage import Storage
 
 
 FAKE_COOKIE = "A1=abc123; B=xyz"
@@ -636,7 +636,7 @@ def _payload_with_history(
 
 
 def _seed_price(storage: Storage, ticker: str, trading_date: date, close: float) -> None:
-    from market_sentiment.models import PriceBar
+    from equity_research.models import PriceBar
 
     storage.upsert_prices(
         [
@@ -770,7 +770,7 @@ class AnalystHistorySignalsSequentialRunsTests(TestCase):
 
     def test_30d_and_90d_windows_use_the_closest_prior_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            from market_sentiment.models import AnalystConsensusSnapshotRow
+            from equity_research.models import AnalystConsensusSnapshotRow
 
             storage = _make_storage(tmp)
             run_date = date(2026, 6, 1)

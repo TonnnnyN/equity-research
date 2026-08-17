@@ -2,24 +2,24 @@
 
 This reference covers shared project commands. Skill-specific scripts are documented inside each Skill:
 
-- `skills/market-sentiment-research/references/script_reference.md`
+- `skills/equity-research/references/script_reference.md`
 
 ## CLI Entry Point
 
 The Python package exposes:
 
 ```bash
-market-sentiment
+equity-research
 ```
 
 Core commands:
 
 ```bash
-market-sentiment --config config/watchlist.toml init-db
-market-sentiment --config config/watchlist.toml preflight
-market-sentiment --config config/watchlist.toml run-daily
-market-sentiment --config config/watchlist.toml show-report --date YYYY-MM-DD
-market-sentiment --config config/watchlist.toml cleanup-data --date YYYY-MM-DD
+equity-research --config config/default.toml init-db
+equity-research --config config/default.toml preflight
+equity-research --config config/default.toml review ZM NVDA AMZN
+equity-research --config config/default.toml show-report --date YYYY-MM-DD
+equity-research --config config/default.toml cleanup-data --date YYYY-MM-DD
 ```
 
 Use `preflight` before diagnosing provider failures. It distinguishes missing API keys, X account/cookie setup, options configuration, and optional provider coverage.

@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 from unittest import TestCase
 
-from market_sentiment.models import PriceBar, Threshold
-from market_sentiment.triggers import compute_trigger
+from equity_research.models import PriceBar, Threshold
+from equity_research.triggers import compute_trigger
 
 
 def make_prices(ticker: str, closes: list[float]) -> list[PriceBar]:

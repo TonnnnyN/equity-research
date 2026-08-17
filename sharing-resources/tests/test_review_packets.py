@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
-from market_sentiment.models import (
+from equity_research.models import (
     ActionState,
     BetaEstimate,
     BucketScore,
@@ -32,8 +32,8 @@ from market_sentiment.models import (
     TriggerResult,
     ValuationDerived,
 )
-from market_sentiment.review_packets import build_review_packet
-from market_sentiment.storage import Storage
+from equity_research.review_packets import build_review_packet
+from equity_research.storage import Storage
 
 
 def _pv(value: float | None, reason: str | None = None) -> ProvenancedValue:
@@ -455,7 +455,7 @@ class ReviewPacketTests(TestCase):
 
     def test_earnings_calendar_block_with_data(self) -> None:
         """Test earnings_calendar block when context has fresh earnings data."""
-        from market_sentiment.models import EarningsCalendar
+        from equity_research.models import EarningsCalendar
 
         security = Security(ticker="MSFT", name="Microsoft", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
         run_date = date(2026, 5, 15)
@@ -501,7 +501,7 @@ class ReviewPacketTests(TestCase):
 
     def test_earnings_calendar_block_unavailable(self) -> None:
         """Test earnings_calendar block when context.earnings_calendar exists but has no date."""
-        from market_sentiment.models import EarningsCalendar
+        from equity_research.models import EarningsCalendar
 
         security = Security(ticker="SMALL_CAP", name="Small Cap", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
         run_date = date(2026, 5, 15)
@@ -749,7 +749,7 @@ class ReviewPacketTests(TestCase):
         scorecard = self._minimal_scorecard(security, run_date)
 
         # Simulate an exception during always-on metric computation
-        with patch("market_sentiment.review_packets.valuation_models.piotroski_f_score", side_effect=RuntimeError("boom")):
+        with patch("equity_research.review_packets.valuation_models.piotroski_f_score", side_effect=RuntimeError("boom")):
             packet = build_review_packet(datetime(2026, 8, 17, 14, 0, 0), context, scorecard)
 
         # The whole packet must still be generated; always_on degrades to None.

@@ -6,28 +6,28 @@ from pathlib import Path
 from unittest import TestCase
 from unittest.mock import patch
 
-from market_sentiment.config import DEFAULT_REPORT_RECIPIENT, load_config
+from equity_research.config import DEFAULT_REPORT_RECIPIENT, load_config
 
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "watchlist.toml"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.toml"
 
 
 class ConfigTests(TestCase):
     def test_load_config_parses_email_delivery_settings_from_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             overrides = {
-                "MARKET_SENTIMENT_DATA_DIR": tmp,
-                "MARKET_SENTIMENT_DB_PATH": str(Path(tmp) / "market_sentiment.db"),
-                "MARKET_SENTIMENT_SMTP_HOST": "smtp.example.com",
-                "MARKET_SENTIMENT_SMTP_PORT": "465",
-                "MARKET_SENTIMENT_SMTP_USERNAME": "sender@example.com",
-                "MARKET_SENTIMENT_SMTP_PASSWORD": "secret",
-                "MARKET_SENTIMENT_EMAIL_FROM": "reports@example.com",
-                "MARKET_SENTIMENT_REPORT_EMAIL_TO": "1786146194@qq.com,alice@example.com",
-                "MARKET_SENTIMENT_SMTP_USE_SSL": "true",
-                "MARKET_SENTIMENT_SMTP_USE_STARTTLS": "false",
-                "MARKET_SENTIMENT_SMTP_TIMEOUT_SECONDS": "12.5",
-                "MARKET_SENTIMENT_EMAIL_SUBJECT_PREFIX": "Daily Market Sentiment",
+                "EQUITY_RESEARCH_DATA_DIR": tmp,
+                "EQUITY_RESEARCH_DB_PATH": str(Path(tmp) / "equity_research.db"),
+                "EQUITY_RESEARCH_SMTP_HOST": "smtp.example.com",
+                "EQUITY_RESEARCH_SMTP_PORT": "465",
+                "EQUITY_RESEARCH_SMTP_USERNAME": "sender@example.com",
+                "EQUITY_RESEARCH_SMTP_PASSWORD": "secret",
+                "EQUITY_RESEARCH_EMAIL_FROM": "reports@example.com",
+                "EQUITY_RESEARCH_REPORT_EMAIL_TO": "1786146194@qq.com,alice@example.com",
+                "EQUITY_RESEARCH_SMTP_USE_SSL": "true",
+                "EQUITY_RESEARCH_SMTP_USE_STARTTLS": "false",
+                "EQUITY_RESEARCH_SMTP_TIMEOUT_SECONDS": "12.5",
+                "EQUITY_RESEARCH_EMAIL_SUBJECT_PREFIX": "Daily Market Sentiment",
             }
             with patch.dict(os.environ, overrides, clear=False):
                 config = load_config(str(CONFIG_PATH))
@@ -47,8 +47,8 @@ class ConfigTests(TestCase):
     def test_load_config_defaults_to_report_recipient_when_unspecified(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             overrides = {
-                "MARKET_SENTIMENT_DATA_DIR": tmp,
-                "MARKET_SENTIMENT_DB_PATH": str(Path(tmp) / "market_sentiment.db"),
+                "EQUITY_RESEARCH_DATA_DIR": tmp,
+                "EQUITY_RESEARCH_DB_PATH": str(Path(tmp) / "equity_research.db"),
             }
             with patch.dict(os.environ, overrides, clear=False):
                 config = load_config(str(CONFIG_PATH))
@@ -58,15 +58,15 @@ class ConfigTests(TestCase):
     def test_load_config_applies_default_retention_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             overrides = {
-                "MARKET_SENTIMENT_DATA_DIR": tmp,
-                "MARKET_SENTIMENT_DB_PATH": str(Path(tmp) / "market_sentiment.db"),
+                "EQUITY_RESEARCH_DATA_DIR": tmp,
+                "EQUITY_RESEARCH_DB_PATH": str(Path(tmp) / "equity_research.db"),
             }
             with patch.dict(os.environ, overrides, clear=False):
                 config = load_config(str(CONFIG_PATH))
 
         self.assertEqual(config.retention.report_days, 90)
         self.assertEqual(config.retention.raw_payload_days, 30)
-        # watchlist.toml pins this explicitly to the ~5y price-history target
+        # default.toml pins this explicitly to the ~5y price-history target
         # (config.PRICE_HISTORY_TARGET_DAYS) plus a 90-day buffer — see
         # config.DEFAULT_DAILY_PRICE_RETENTION_DAYS. A shorter retention window would
         # prune deep-backfilled price history right back out.
@@ -82,7 +82,7 @@ class ConfigTests(TestCase):
                 """
 [project]
 timezone = "Asia/Hong_Kong"
-db_path = "data/state/market_sentiment.sqlite3"
+db_path = "data/state/equity_research.sqlite3"
 
 [triggers.compute]
 drawdown_10d = -0.10
@@ -139,8 +139,8 @@ max_posts = 15
     def test_load_config_parses_x_social_overrides_from_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             overrides = {
-                "MARKET_SENTIMENT_DATA_DIR": tmp,
-                "MARKET_SENTIMENT_DB_PATH": str(Path(tmp) / "market_sentiment.db"),
+                "EQUITY_RESEARCH_DATA_DIR": tmp,
+                "EQUITY_RESEARCH_DB_PATH": str(Path(tmp) / "equity_research.db"),
                 "SOCIAL_ENABLED": "true",
                 "SOCIAL_PROVIDER_TIMEOUT_SECONDS": "7.5",
                 "X_ENABLED": "true",

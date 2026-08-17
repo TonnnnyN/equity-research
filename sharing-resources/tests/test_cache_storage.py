@@ -6,8 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.models import FilingSummaryCacheRow, SocialPostCacheRow
-from market_sentiment.storage import Storage
+from equity_research.models import FilingSummaryCacheRow, SocialPostCacheRow
+from equity_research.storage import Storage
 
 
 class CacheStorageTests(TestCase):

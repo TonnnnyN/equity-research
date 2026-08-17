@@ -9,17 +9,17 @@ from urllib.error import URLError
 from unittest import TestCase
 from unittest.mock import patch
 
-from market_sentiment.config import load_config
-from market_sentiment.http import HttpClient, redact_url
-from market_sentiment.models import PriceBar, SourceStatus
-from market_sentiment.pipeline import DailyPipeline
-from market_sentiment.sources.base import SourcePayload
-from market_sentiment.sources.sec import SecClient, _extract_latest_pair
-from market_sentiment.storage import Storage
-from market_sentiment.sources.social_base import matches_security_text
+from equity_research.config import load_config
+from equity_research.http import HttpClient, redact_url
+from equity_research.models import PriceBar, SourceStatus
+from equity_research.pipeline import DailyPipeline
+from equity_research.sources.base import SourcePayload
+from equity_research.sources.sec import SecClient, _extract_latest_pair
+from equity_research.storage import Storage
+from equity_research.sources.social_base import matches_security_text
 
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "watchlist.toml"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.toml"
 
 
 class FakeResponse:
@@ -150,7 +150,7 @@ class SourceTests(TestCase):
     def test_http_client_redacts_api_keys_in_network_errors(self) -> None:
         client = HttpClient("test-agent")
 
-        with patch("market_sentiment.http.urlopen", side_effect=URLError("boom")):
+        with patch("equity_research.http.urlopen", side_effect=URLError("boom")):
             with self.assertRaisesRegex(RuntimeError, "api_key=REDACTED") as raised:
                 client.get("https://example.com/data", params={"api_key": "secret", "series_id": "DGS10"})
 
@@ -295,7 +295,7 @@ class SourceTests(TestCase):
             storage.init_db()
             client = SecClient(http, storage)
 
-            from market_sentiment.models import FilingSummaryCacheRow
+            from equity_research.models import FilingSummaryCacheRow
             storage.upsert_filing_summary_cache([
                 FilingSummaryCacheRow(
                     cik="0000789019",

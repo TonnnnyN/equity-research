@@ -10,14 +10,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from market_sentiment.decision_tracker import (
+from equity_research.decision_tracker import (
     DecisionAlert,
     compute_metric,
     evaluate_condition,
     evaluate_decision,
+    evaluate_decision_through_date,
     load_decision_files,
 )
-from market_sentiment.models import EarningsCalendar, PriceBar
+from equity_research.models import EarningsCalendar, PriceBar
 
 
 class LoadDecisionFilesTests(TestCase):
@@ -645,3 +646,278 @@ class EvaluateDecisionTests(TestCase):
         self.assertIsNotNone(alert1)
         self.assertIsNotNone(alert2)
         self.assertEqual(alert1.kind, alert2.kind)
+
+
+class EvaluateDecisionThroughDateTests(TestCase):
+    """Tests for day-by-day evaluation over a date range."""
+
+    def _make_bars(self, base_date: date, closes: list[float]) -> list[PriceBar]:
+        """Helper to create PriceBar list."""
+        bars = []
+        for i, close in enumerate(closes):
+            bars.append(
+                PriceBar(
+                    ticker="TEST",
+                    trading_date=base_date + timedelta(days=i),
+                    open=close,
+                    high=close + 1,
+                    low=close - 1,
+                    close=close,
+                    volume=1000.0,
+                    source="test",
+                )
+            )
+        return bars
+
+    def test_breach_inside_gap_recovered_by_run_date(self) -> None:
+        """
+        Test 1: Reproduction case - a breach inside a gap where price recovered by run date.
+        Price breaches threshold on day 2 (24.80 < 25.72), but recovers to 26.50 by day 4.
+        Should resolve on day 2 at 24.80, not return None.
+        """
+        # Day 0: 26.50, Day 1: 24.80 (breach!), Day 2: 26.50, Day 3: 26.50
+        prices = {
+            date(2026, 8, 10): 26.50,
+            date(2026, 8, 11): 24.80,
+            date(2026, 8, 12): 26.50,
+            date(2026, 8, 13): 26.50,
+        }
+        bars = [PriceBar("ZM", d, p, p, p, p, None, "t") for d, p in sorted(prices.items())]
+        decision = {
+            "ticker": "ZM",
+            "decision_date": "2026-08-10",
+            "state": "STARTER",
+            "reference_close": 26.50,
+            "invalidate_conditions": [
+                {"metric": "close", "comparator": "<=", "threshold": 25.72, "window": 1}
+            ],
+            "rerate_conditions": [],
+        }
+
+        alert, fired_date, fired_price = evaluate_decision_through_date(
+            decision,
+            bars=bars,
+            earnings=None,
+            since_date=date(2026, 8, 10),
+            until_date=date(2026, 8, 13),
+        )
+
+        # Should fire on day 1 (2026-08-11).
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.kind, "invalidated")
+        self.assertEqual(fired_date, date(2026, 8, 11))
+        self.assertAlmostEqual(fired_price, 24.80, places=2)
+
+    def test_window_2_condition_crosses_one_day_only_does_not_fire(self) -> None:
+        """
+        Test 2: A window:2 condition where threshold is crossed on one day only.
+        Should NOT resolve.
+        Prices: [26.50, 25.50, 26.00, 26.50]
+        Threshold: 25.72
+        Day 1 (25.50) < 25.72, but day 0 (26.50) > 25.72, so window:2 is not satisfied.
+        """
+        prices = {
+            date(2026, 8, 10): 26.50,
+            date(2026, 8, 11): 25.50,  # Below threshold
+            date(2026, 8, 12): 26.00,
+            date(2026, 8, 13): 26.50,
+        }
+        bars = [PriceBar("ZM", d, p, p, p, p, None, "t") for d, p in sorted(prices.items())]
+        decision = {
+            "ticker": "ZM",
+            "decision_date": "2026-08-10",
+            "state": "STARTER",
+            "reference_close": 26.50,
+            "invalidate_conditions": [
+                {"metric": "close", "comparator": "<=", "threshold": 25.72, "window": 2}
+            ],
+            "rerate_conditions": [],
+        }
+
+        alert, fired_date, fired_price = evaluate_decision_through_date(
+            decision,
+            bars=bars,
+            earnings=None,
+            since_date=date(2026, 8, 10),
+            until_date=date(2026, 8, 13),
+        )
+
+        # Should NOT fire (only one day below threshold, window requires 2).
+        self.assertIsNone(alert)
+        self.assertIsNone(fired_date)
+        self.assertIsNone(fired_price)
+
+    def test_window_2_condition_crosses_two_consecutive_days_fires(self) -> None:
+        """
+        Test 3: A window:2 condition crossed on two consecutive days inside a gap.
+        Should resolve on the second of those days.
+        Prices: [26.50, 25.50, 25.00, 26.50]
+        Threshold: 25.72
+        Days 1 and 2 both < 25.72, so window:2 is satisfied on day 2.
+        """
+        prices = {
+            date(2026, 8, 10): 26.50,
+            date(2026, 8, 11): 25.50,  # Below threshold
+            date(2026, 8, 12): 25.00,  # Below threshold (day 2)
+            date(2026, 8, 13): 26.50,
+        }
+        bars = [PriceBar("ZM", d, p, p, p, p, None, "t") for d, p in sorted(prices.items())]
+        decision = {
+            "ticker": "ZM",
+            "decision_date": "2026-08-10",
+            "state": "STARTER",
+            "reference_close": 26.50,
+            "invalidate_conditions": [
+                {"metric": "close", "comparator": "<=", "threshold": 25.72, "window": 2}
+            ],
+            "rerate_conditions": [],
+        }
+
+        alert, fired_date, fired_price = evaluate_decision_through_date(
+            decision,
+            bars=bars,
+            earnings=None,
+            since_date=date(2026, 8, 10),
+            until_date=date(2026, 8, 13),
+        )
+
+        # Should fire on day 2 (2026-08-12, the second consecutive day below threshold).
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.kind, "invalidated")
+        self.assertEqual(fired_date, date(2026, 8, 12))
+        self.assertAlmostEqual(fired_price, 25.00, places=2)
+
+    def test_invalidate_and_rerate_on_different_days_invalidate_wins(self) -> None:
+        """
+        Test 4: Invalidate fires on day 3, rerate fires on day 5 within one gap.
+        Invalidation should win because it came first.
+        Prices: [26.50, 26.00, 24.00, 26.00, 210.00, 211.00]
+        Day 2: 24.00 (invalidate at 25.72 threshold)
+        Day 4: 210.00 (rerate at 210.0 threshold)
+        """
+        prices = {
+            date(2026, 8, 10): 26.50,
+            date(2026, 8, 11): 26.00,
+            date(2026, 8, 12): 24.00,  # Invalidate fires here
+            date(2026, 8, 13): 26.00,
+            date(2026, 8, 14): 210.00,  # Rerate fires here
+            date(2026, 8, 15): 211.00,
+        }
+        bars = [PriceBar("ZM", d, p, p, p, p, None, "t") for d, p in sorted(prices.items())]
+        decision = {
+            "ticker": "ZM",
+            "decision_date": "2026-08-10",
+            "state": "STARTER",
+            "reference_close": 26.50,
+            "invalidate_conditions": [
+                {"metric": "close", "comparator": "<=", "threshold": 25.72, "window": 1}
+            ],
+            "rerate_conditions": [
+                {"metric": "close", "comparator": ">=", "threshold": 210.0, "window": 1}
+            ],
+        }
+
+        alert, fired_date, fired_price = evaluate_decision_through_date(
+            decision,
+            bars=bars,
+            earnings=None,
+            since_date=date(2026, 8, 10),
+            until_date=date(2026, 8, 15),
+        )
+
+        # Invalidate should fire first (day 2026-08-12).
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.kind, "invalidated")
+        self.assertEqual(fired_date, date(2026, 8, 12))
+        self.assertAlmostEqual(fired_price, 24.00, places=2)
+
+    def test_90_day_expiry_from_opening_date(self) -> None:
+        """
+        Test 5: A thesis unchecked past 90 calendar days should expire.
+        Days held is calculated from decision_date, not from last check.
+        Note: evaluate_decision_through_date doesn't check expiry; that's done in the pipeline.
+        This test ensures the underlying compute_metric('days_held') works correctly.
+        """
+        # Create 100 bars, starting from 2026-05-01, ending at 2026-09-08 (130+ calendar days).
+        base_date = date(2026, 5, 1)
+        bars = self._make_bars(base_date, [100.0] * 100)
+
+        # The last bar should be around 2026-09-08.
+        last_bar_date = bars[-1].trading_date
+        self.assertGreater((last_bar_date - base_date).days, 90)
+
+        decision = {
+            "ticker": "TEST",
+            "decision_date": "2026-05-01",
+            "state": "STARTER",
+            "reference_close": 100.0,
+            "invalidate_conditions": [],
+            "rerate_conditions": [],
+        }
+
+        # Use evaluate_decision (single-day) with the last bar date; it should detect expiry.
+        alert = evaluate_decision(
+            decision,
+            bars=bars,
+            earnings=None,
+            run_date=last_bar_date,
+        )
+
+        # Should be expired.
+        self.assertIsNotNone(alert)
+        self.assertEqual(alert.kind, "expired")
+        self.assertIn("horizon", alert.reason.lower())
+
+    def test_evaluate_through_date_empty_bars_returns_none(self) -> None:
+        """Empty bars list should return None."""
+        decision = {
+            "ticker": "TEST",
+            "decision_date": "2026-05-01",
+            "state": "STARTER",
+            "reference_close": 100.0,
+            "invalidate_conditions": [
+                {"metric": "close", "comparator": "<", "threshold": 50.0}
+            ],
+            "rerate_conditions": [],
+        }
+
+        alert, fired_date, fired_price = evaluate_decision_through_date(
+            decision,
+            bars=[],
+            earnings=None,
+            since_date=date(2026, 5, 1),
+            until_date=date(2026, 5, 10),
+        )
+
+        self.assertIsNone(alert)
+        self.assertIsNone(fired_date)
+        self.assertIsNone(fired_price)
+
+    def test_evaluate_through_date_no_trading_days_in_range_returns_none(self) -> None:
+        """If the bar dates don't fall in the specified range, return None."""
+        bars = self._make_bars(date(2026, 5, 1), [100.0] * 5)
+        # Bars are 2026-05-01 through 2026-05-05.
+
+        decision = {
+            "ticker": "TEST",
+            "decision_date": "2026-05-01",
+            "state": "STARTER",
+            "reference_close": 100.0,
+            "invalidate_conditions": [
+                {"metric": "close", "comparator": "<", "threshold": 50.0}
+            ],
+            "rerate_conditions": [],
+        }
+
+        # Query a date range after all bars.
+        alert, fired_date, fired_price = evaluate_decision_through_date(
+            decision,
+            bars=bars,
+            earnings=None,
+            since_date=date(2026, 5, 10),
+            until_date=date(2026, 5, 20),
+        )
+
+        self.assertIsNone(alert)
+        self.assertIsNone(fired_date)
+        self.assertIsNone(fired_price)

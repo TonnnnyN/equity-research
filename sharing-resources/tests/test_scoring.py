@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from unittest import TestCase
 
-from market_sentiment.models import (
+from equity_research.models import (
     ActionState,
     EventTag,
     FundamentalSnapshot,
@@ -18,8 +18,8 @@ from market_sentiment.models import (
     SourceStatus,
     TriggerResult,
 )
-from market_sentiment.pipeline import dedupe_statuses
-from market_sentiment.scoring import (
+from equity_research.pipeline import dedupe_statuses
+from equity_research.scoring import (
     BucketWeights,
     build_scorecard,
     cap_state_if_data_insufficient,

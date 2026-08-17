@@ -1,4 +1,4 @@
-"""Tests for market_sentiment.valuation — derived valuation inputs (Layer 2 evidence only).
+"""Tests for equity_research.valuation — derived valuation inputs (Layer 2 evidence only).
 
 No live network involved: everything here is pure computation over in-memory
 ValuationFundamentals / PriceBar fixtures.
@@ -8,14 +8,14 @@ from __future__ import annotations
 from datetime import date, timedelta
 from unittest import TestCase
 
-from market_sentiment.models import (
+from equity_research.models import (
     ConceptDatapoint,
     ConceptHistory,
     PriceBar,
     ShareClassEntry,
     ValuationFundamentals,
 )
-from market_sentiment.valuation import compute_beta, compute_valuation_derived
+from equity_research.valuation import compute_beta, compute_valuation_derived
 
 
 def _history(concept: str, tag: str, values: list[tuple[date, float]], unit: str = "USD") -> ConceptHistory:

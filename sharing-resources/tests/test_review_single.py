@@ -12,8 +12,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.config import load_config
-from market_sentiment.models import (
+from equity_research.config import load_config
+from equity_research.models import (
     FundamentalSnapshot,
     Layer,
     MacroObservation,
@@ -21,11 +21,11 @@ from market_sentiment.models import (
     PriceBar,
     SourceStatus,
 )
-from market_sentiment.pipeline import DailyPipeline
-from market_sentiment.sources.base import SourcePayload
+from equity_research.pipeline import DailyPipeline
+from equity_research.sources.base import SourcePayload
 
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "watchlist.toml"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.toml"
 
 
 def _make_bars(ticker: str, start_close: float, drop: float, count: int = 25) -> list[PriceBar]:
@@ -137,8 +137,8 @@ class ReviewSingleTests(TestCase):
     # ------------------------------------------------------------------ helpers
 
     def _make_pipeline(self, tmp: str) -> DailyPipeline:
-        os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp
-        os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp) / "market_sentiment.db")
+        os.environ["EQUITY_RESEARCH_DATA_DIR"] = tmp
+        os.environ["EQUITY_RESEARCH_DB_PATH"] = str(Path(tmp) / "equity_research.db")
         pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
         pipeline.config.social.enabled = False
         pipeline.config.options.enabled = False
@@ -147,8 +147,8 @@ class ReviewSingleTests(TestCase):
     # ------------------------------------------------------------------ tests
 
     def _make_pipeline_and_wire(self, tmp: str, price_fn=_fake_prices_dropping) -> DailyPipeline:
-        os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp
-        os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp) / "market_sentiment.db")
+        os.environ["EQUITY_RESEARCH_DATA_DIR"] = tmp
+        os.environ["EQUITY_RESEARCH_DB_PATH"] = str(Path(tmp) / "equity_research.db")
         pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
         pipeline.config.social.enabled = False
         pipeline.config.options.enabled = False

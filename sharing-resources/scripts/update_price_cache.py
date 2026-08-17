@@ -26,12 +26,12 @@ from datetime import date, datetime
 from pathlib import Path
 
 try:
-    from market_sentiment.config import PRICE_HISTORY_TARGET_DAYS, load_config
-    from market_sentiment.pipeline import DailyPipeline
+    from equity_research.config import PRICE_HISTORY_TARGET_DAYS, load_config
+    from equity_research.pipeline import DailyPipeline
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-    from market_sentiment.config import PRICE_HISTORY_TARGET_DAYS, load_config
-    from market_sentiment.pipeline import DailyPipeline
+    from equity_research.config import PRICE_HISTORY_TARGET_DAYS, load_config
+    from equity_research.pipeline import DailyPipeline
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

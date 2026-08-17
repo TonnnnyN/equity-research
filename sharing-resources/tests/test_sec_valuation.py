@@ -10,8 +10,8 @@ from datetime import date
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.sources.sec import SecClient
-from market_sentiment.storage import Storage
+from equity_research.sources.sec import SecClient
+from equity_research.storage import Storage
 
 
 class FakeResponse:

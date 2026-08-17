@@ -6,8 +6,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.models import PipelineContext, PriceBar
-from market_sentiment.storage import Storage
+from equity_research.models import PipelineContext, PriceBar
+from equity_research.storage import Storage
 
 
 class StorageTests(TestCase):
@@ -506,8 +506,8 @@ class StorageTests(TestCase):
 
     def test_previous_judgement_absent_on_first_run(self) -> None:
         """Test that previous_judgement is None when no prior portrait or order exists."""
-        from market_sentiment.review_packets import build_review_packet
-        from market_sentiment.models import (
+        from equity_research.review_packets import build_review_packet
+        from equity_research.models import (
             ActionState, BetaEstimate, BucketScore, EventTag,
             PriceBar, PriceWindow, ProvenancedValue, ScoreCard,
             Security, SourceStatus, TriggerResult, ValuationDerived
@@ -552,8 +552,8 @@ class StorageTests(TestCase):
 
     def test_previous_judgement_populated_on_second_run(self) -> None:
         """Test that previous_judgement is populated on a second run with prior data."""
-        from market_sentiment.review_packets import build_review_packet
-        from market_sentiment.models import (
+        from equity_research.review_packets import build_review_packet
+        from equity_research.models import (
             ActionState, BetaEstimate, BucketScore, EventTag,
             PriceBar, PriceWindow, ProvenancedValue, ScoreCard,
             Security, SourceStatus, TriggerResult, ValuationDerived

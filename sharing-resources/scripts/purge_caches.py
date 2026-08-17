@@ -12,10 +12,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 try:
-    from market_sentiment.storage import Storage
+    from equity_research.storage import Storage
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-    from market_sentiment.storage import Storage
+    from equity_research.storage import Storage
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,7 +38,7 @@ def parse_args() -> argparse.Namespace:
         "--db-path",
         type=Path,
         default=None,
-        help="Path to SQLite database (default: data/state/market_sentiment.db)",
+        help="Path to SQLite database (default: data/state/equity_research.db)",
     )
     parser.add_argument(
         "--dry-run",
@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
 
-    db_path = args.db_path or Path("data/state/market_sentiment.db")
+    db_path = args.db_path or Path("data/state/equity_research.db")
     if not db_path.is_absolute():
         db_path = Path.cwd() / db_path
 

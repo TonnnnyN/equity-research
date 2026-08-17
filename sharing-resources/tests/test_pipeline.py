@@ -8,9 +8,9 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import TestCase
 
-from market_sentiment.config import load_config
-from market_sentiment.decision_tracker import DecisionAlert
-from market_sentiment.models import (
+from equity_research.config import load_config
+from equity_research.decision_tracker import DecisionAlert
+from equity_research.models import (
     ActionState,
     Benchmark,
     BucketScore,
@@ -26,13 +26,13 @@ from market_sentiment.models import (
     SourceStatus,
     TriggerResult,
 )
-from market_sentiment.pipeline import DailyPipeline
-from market_sentiment.scoring import build_scorecard
-from market_sentiment.sources.base import SourcePayload
-from market_sentiment.storage import Storage
+from equity_research.pipeline import DailyPipeline
+from equity_research.scoring import build_scorecard
+from equity_research.sources.base import SourcePayload
+from equity_research.storage import Storage
 
 
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "watchlist.toml"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "config" / "default.toml"
 
 
 def make_price_payload(ticker: str, closing_start: float, drop: float) -> list[PriceBar]:
@@ -129,8 +129,8 @@ class PipelineTests(TestCase):
     def test_track_decisions_ingests_valid_decision_file(self) -> None:
         """Test that a valid .decision.json file is ingested into the active_decisions table."""
         with tempfile.TemporaryDirectory() as tmp:
-            os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp
-            os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp) / "market_sentiment.db")
+            os.environ["EQUITY_RESEARCH_DATA_DIR"] = tmp
+            os.environ["EQUITY_RESEARCH_DB_PATH"] = str(Path(tmp) / "equity_research.db")
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.storage.init_db()
 
@@ -171,8 +171,8 @@ class PipelineTests(TestCase):
     def test_track_decisions_skips_malformed_files_with_warnings(self) -> None:
         """Test that malformed decision files produce warnings and are not ingested."""
         with tempfile.TemporaryDirectory() as tmp:
-            os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp
-            os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp) / "market_sentiment.db")
+            os.environ["EQUITY_RESEARCH_DATA_DIR"] = tmp
+            os.environ["EQUITY_RESEARCH_DB_PATH"] = str(Path(tmp) / "equity_research.db")
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.storage.init_db()
 
@@ -197,8 +197,8 @@ class PipelineTests(TestCase):
     def test_track_decisions_does_not_resurrect_invalidated_decisions(self) -> None:
         """Test that an already-invalidated decision in the table is not re-upserted when file is re-scanned."""
         with tempfile.TemporaryDirectory() as tmp:
-            os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp
-            os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp) / "market_sentiment.db")
+            os.environ["EQUITY_RESEARCH_DATA_DIR"] = tmp
+            os.environ["EQUITY_RESEARCH_DB_PATH"] = str(Path(tmp) / "equity_research.db")
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.storage.init_db()
 
@@ -240,8 +240,8 @@ class PipelineTests(TestCase):
     def test_track_decisions_swallows_errors_and_returns_empty_result(self) -> None:
         """Test that internal errors are swallowed and the method returns safely."""
         with tempfile.TemporaryDirectory() as tmp:
-            os.environ["MARKET_SENTIMENT_DATA_DIR"] = tmp
-            os.environ["MARKET_SENTIMENT_DB_PATH"] = str(Path(tmp) / "market_sentiment.db")
+            os.environ["EQUITY_RESEARCH_DATA_DIR"] = tmp
+            os.environ["EQUITY_RESEARCH_DB_PATH"] = str(Path(tmp) / "equity_research.db")
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.storage.init_db()
 

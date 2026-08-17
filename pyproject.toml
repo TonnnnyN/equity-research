@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "market-sentiment"
+name = "equity-research"
 version = "0.1.0"
 description = "Local daily-close market sentiment pipeline for AI applications, compute, and power equities."
 readme = "README.md"
@@ -21,7 +21,7 @@ social-x-twscrape = ["twscrape>=0.17.0"]
 social-x-twikit = ["twikit>=2.3.3"]
 
 [project.scripts]
-market-sentiment = "market_sentiment.cli:main"
+equity-research = "equity_research.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "sharing-resources/src"}
