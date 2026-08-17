@@ -335,37 +335,109 @@ Inspect daily outputs under `data/reports/<date>/`:
 - `manual_agent_report.zh.md` — the human-facing summary (if generated) covering triggered tickers.
 - `review_packets/<TICKER>.json` — machine-readable structured evidence for your independent reasoning per ticker. This is the primary input to the agent's decision-making.
 
-## Output Shape
+## Output Shape — Two-Tier Contract
 
-Lead with **one action, not two verdicts.** The rule-engine state and the valuation gate result are inputs to the final action, not separate conclusions to present side by side — the reader needs a single `Reject` / `Watch` / `Starter` / `Add` / `Exit`, not a rule-engine verdict and a valuation verdict left for them to reconcile.
+The agent's conclusions go to **two places with different registers**:
 
-Lead with:
+### Tier 1 — Chat Summary (What You Read in This Conversation)
 
-- conclusion
-- action
-- decision snapshot:
-  - rule-engine score → suggested action (`rule_engine_precheck.state`, `total_score`)
-  - valuation summary → gate result: `pass` (valuation does not restrain the action) or `downgrade` (valuation pulled the action down, and from what to what)
-  - **final action** (post-gate; this is the one action from the lead)
-  - when the final action is `Starter` or `Add`: a **position-size hint** tied to the margin of safety (e.g., current price vs. `net_cash_floor` / `sum_of_the_parts` / the bear case in `three_scenario_expected_value` — a thinner margin of safety implies a smaller starting size, never a fixed size regardless of valuation)
+**Audience:** The owner, who may have no finance background.
 
-Then provide:
+**Constraint:** Every number that survives must translate into a decision or a red flag. No dense ratios, no unexplained jargon. This is where actionability lives.
 
-- event calendar
-- trigger and attribution
-- evidence by lane
-- **valuation card** (when valuation produced usable output):
-  - Step 1 portrait: the six facts the agent established, with sources
-  - Step 2 order: models the agent ordered and their rationale; models deliberately declined and why
-  - always-on metrics (Piotroski F-Score, Altman Z-Score, Beneish M-Score, net-cash floor)
-  - key assumptions in the order (discount-rate method and range, growth assumptions, bear/base/bull probabilities, peer set if used)
-  - the value range produced (never a single number — quote the grid or the bear/base/bull spread)
-  - where the current price sits inside that range
-- risks and invalidation
-- rerate conditions when relevant
-- source links
+**Structure:** Lead with one action (`Reject` / `Watch` / `Starter` / `Add` / `Exit`), then explain it in ordinary words. Use this exact layout:
 
-Keep the answer in the user's language unless they ask otherwise.
+```
+TICKER  Company Name    Price   Today's Change
+
+  Recommendation
+
+  Plain-language narrative (the "why")
+    ▪ What the price action means
+    ▪ What evidence supports or contradicts it
+    ▪ What stops us from acting bigger/smaller
+    ▪ What conditions would break this thesis
+    ▪ Any evidence gaps and how we handled them
+
+  Detailed analysis → data/reports/<date>/<TICKER>.md
+```
+
+**Worked example (Zoom, 2026-08-17):**
+
+```
+ZM  Zoom            $105.96   今日 −3.5%
+
+  建议：小仓位试探（不是加仓）
+
+  怎么回事
+    股价跌了，但翻遍财报和公告没找到生意变坏的证据，更像是情绪。
+
+  为什么只敢小仓
+    你付的这个价钱里，有三分之一其实是它账上趴着的现金，还有
+    一笔对 Anthropic 的投资。真正的主业只值另外三分之二。
+    而主业增长很慢，市场现在基本不指望它再长了。
+    这个预期偏悲观 —— 但也意味着要涨得靠公司拿出新东西，
+    不是靠"便宜了所以会回来"。
+
+  跌到哪儿才算真出事
+    就算主业一文不值，光账上的现金也值每股 25 美元。
+    财务体检没有红灯：没有破产迹象，也没有做假账的嫌疑。
+
+  什么情况下我这个判断就是错的
+    跌破 25 美元 —— 说明市场认为它的主业是负资产，那我看错了
+    涨到 210 美元 —— 最乐观的情形都已经反映完了，该考虑落袋
+
+  有一块证据这次是空的
+    Reddit 和 X 这次抓不到，散户情绪没法判断。我把这部分的
+    分量挪给了财报数据，没有假装知道。
+
+  完整分析 → data/reports/2026-08-17/ZM.md
+```
+
+#### Four Rules for Tier 1 (with reasoning):
+
+**1. No jargon.** Never write "reverse DCF", "TTM", "Altman Z", "NDR", "EV/FCF", "percentile" in the chat summary.
+   - *Why:* A non-numerate reader cannot spot an error in a calculation they cannot read. Jargon that impresses other traders makes the decision opaque and unmaintainable. If a concept matters, describe its consequence in ordinary words.
+
+**2. Every surviving number carries its "so what".** "$25 per share in cash" alone is a fact; "even if the business were worthless, the cash alone is worth $25 a share" is a decision.
+   - *Why:* The owner needs to know what to do with the number, not just what it is. A figure without context forces the reader to interpret it themselves, and they may misinterpret or miss it entirely.
+
+**3. Keep only actionable numbers** — price levels the reader can watch. Ratios, scores and growth rates belong in the detailed file.
+   - *Why:* The chat is not a memo to finance staff; it is a decision briefing. The owner acts on price levels and qualitative judgements, not on margin-of-safety grids or FCF CAGR assumptions.
+
+**4. Missing evidence must be stated, never quietly skipped.** A non-expert reader cannot notice an omission by themselves, so silence about a gap is worse for them than for an expert.
+   - *Why:* If social data was unavailable, that weakens the thesis; if valuation was based on incomplete data, the owner must know. Stating the gap is honest; hiding it is a lie of omission.
+
+### Tier 2 — Detailed Report Files (The Durable Record)
+
+**These files are the run history.** Date-partitioned directories under `data/reports/` hold the log; do not create a separate log directory.
+
+**Per-ticker report:** Write one file per ticker per run to `data/reports/<date>/<TICKER>.md`
+
+Content includes everything Tier 1 left out:
+- All six portrait answers with their sources
+- The valuation order: models run, models declined and why
+- Bucket weights with the reason for each departure from calibration defaults
+- Every model's numbers and assumptions (grids as grids, not collapsed values)
+- Sensitivity tables (discount rate × growth rate, bear/base/bull scenarios)
+- The always-on metrics (Piotroski, Altman Z, Beneish M, net-cash floor)
+- Evidence lanes with sources
+- Comparison against the previous run's judgement (if this ticker was analyzed before)
+
+**Index file:** Append one line per judgement to `data/reports/index.md` after each run.
+
+Format (CSV-ish):
+```
+date, ticker, action, reference_close, detailed_report_link
+2026-08-17, ZM, STARTER, 105.96, 2026-08-17/ZM.md
+2026-08-17, MSFT, WATCH, 412.75, 2026-08-17/MSFT.md
+```
+
+The index is the **daily decision ledger** — it is what makes the history reviewable at a glance, and it is the input to the calibration-evolution protocol when it asks "what actually happened after this call?"
+
+#### Alignment with Agent Decision Record
+
+The Tier 1 "what would make me wrong" lines are the plain-language rendering of the `invalidate_if` / `rerate_if` conditions in the decision JSON (see Agent Decision Record section below). **These two must always agree.** If Tier 1 says "breaks below $25", the decision file must have `close <= 25` in an `invalidate_condition`. If they diverge, the reconciliation is a data-entry bug, not a difference in judgement.
 
 ### Agent Decision Record
 
