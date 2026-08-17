@@ -14,7 +14,7 @@
 
 这个项目换了个做法：先用一套**确定性的程序**把数据拉齐、整理成结构化的「证据包」，再让 AI 只在这份整理好的证据上做最后那一步判断。AI 不负责找信息，只负责推理。
 
-项目是一个 **Agent Skill**，配一套 Python 运行时。
+项目是一个 **Agent Skill**，配一套 Python 运行时。**没有 API key 依赖** —— 所有数据源（SEC EDGAR、Yahoo Finance、Stooq）都是免费且无需认证的。
 
 ---
 
@@ -24,17 +24,16 @@
 
 每天 pipeline 跑完，先检查 watchlist 里每只票有没有异常下跌（跌幅超阈值、跑输大盘、创新低）。只有触发的票才进入复核，pipeline 会同时从几个方向拉数据：
 
-- **价格**：Tiger Trade 优先，失败自动 fallback 到 Yahoo / Alpha Vantage / Stooq / 本地缓存
+- **价格**：Yahoo Finance 优先，自动 fallback 到 Stooq / 本地缓存
 - **官方披露**：SEC EDGAR 的财报、filing、财务数字
-- **宏观**：FRED 利率数据
-- **社交**：Reddit 等平台的讨论，先用 DeepSeek 把每条帖子压成「看多/看空/中性 + 摘要」
 - **分析师参考**：Yahoo quoteSummary 拉取机构共识目标价和近期升降级记录，作为仅供参考的附加证据（不进打分体系）
+- **社交信号**（可选）：Agent 使用自己的浏览工具获取 Reddit、X 等平台的讨论链接。如果环境无法访问这些来源，社交数据会被标记为不可用，评分会自动调整。
 
 整理完后输出两样东西：一份给人看的中文日终报告，和一份给 Agent 用的结构化证据包。Agent 读完证据后，给出五种动作之一：`Reject`（不用管）/ `Watch`（观望）/ `Starter`（建小仓）/ `Add`（加仓）/ `Exit`（减仓）。
 
 给出观望或加仓建议时，Agent 必须写清楚「什么情况下这个判断失效」，这些条件会被记下来，之后每天自动复查。
 
-**状态**：核心流程已经跑通，能端到端出报告，目前在持续打磨和回测验证。
+**状态**：核心流程已经跑通，能端到端出报告，目前在持续打磨和部署实盘追踪。
 
 ---
 
@@ -46,10 +45,8 @@
 # 安装
 python3 -m pip install -e .
 
-# 配置密钥（复制模板，填入自己的 API key）
-cp sharing-resources/secrets/market_sentiment.secrets.example.sh \
-   sharing-resources/secrets/market_sentiment.secrets.sh
-source sharing-resources/secrets/market_sentiment.secrets.sh
+# 配置必需的环境变量
+export SEC_USER_AGENT="YourName your.email@example.com"
 
 # 验证配置
 market-sentiment --config config/watchlist.toml preflight
@@ -58,9 +55,9 @@ market-sentiment --config config/watchlist.toml preflight
 market-sentiment --config config/watchlist.toml run-daily
 ```
 
-需要的 API key：Tiger Trade、Alpha Vantage、FRED、SEC（user agent）、DeepSeek，都有免费额度。详见 `sharing-resources/references/configuration_and_secrets.md`。
+**仅需**：`SEC_USER_AGENT` 环境变量（格式为 `"Name email@example.com"`，SEC 用来识别你的脚本）。
 
-**嫌麻烦？** 直接把这个仓库交给 Claude Code，告诉它「帮我把环境配好，我要跑 market-sentiment-research」，它会自己读文档、问你要 key、写配置、跑 preflight 直到跑通。
+**嫌麻烦？** 直接把这个仓库交给 Claude Code，告诉它「帮我把环境配好，我要跑 market-sentiment-research」，它会自己读文档、问你要信息、写配置、跑 preflight 直到跑通。
 
 ---
 
@@ -90,7 +87,7 @@ The usual situation: something in your watchlist drops, and you want to know whe
 
 This project does it differently. A **deterministic pipeline** first gathers the data and assembles it into a structured *evidence packet*. Only then does the AI step in — to reason over that packet. The AI doesn't fetch information; it only does the final judgment.
 
-The project is one **Agent Skill** with a Python runtime.
+The project is one **Agent Skill** with a Python runtime. **No API keys required** — all data sources (SEC EDGAR, Yahoo Finance, Stooq) are free and keyless.
 
 ---
 
@@ -100,29 +97,16 @@ Reviews a **pullback on a single stock**.
 
 After each daily run, the pipeline checks every watchlist ticker for an abnormal drop (drawdown past threshold, underperforming the benchmark, fresh low). Only triggered tickers get reviewed, pulling data from several lanes at once:
 
-- **Price**: Tiger Trade first, with automatic fallback to Yahoo / Alpha Vantage / Stooq / local cache
+- **Price**: Yahoo Finance first, with automatic fallback to Stooq / local cache
 - **Official disclosures**: SEC EDGAR filings, financials, company facts
-- **Macro**: FRED interest-rate data
-- **Social**: Reddit and similar — each post first compressed by DeepSeek into bull/bear/neutral + a summary
 - **Analyst context**: Yahoo `quoteSummary` pulls institutional consensus price targets and recent upgrade/downgrade activity as advisory-only evidence (not factored into the scoring system)
+- **Social signals** (optional): The Agent fetches discussion URLs (Reddit, X) using its own browsing tools. If the environment cannot reach those sources, social data is marked unavailable and scoring adjusts automatically.
 
-The result is two outputs: a human-readable Chinese end-of-day report, and a structured evidence packet for the Agent. After reading the evidence, the Agent picks one of five actions: `Reject` / `Watch` / `Starter` / `Add` / `Exit`.
+The result is two outputs: a human-readable end-of-day report, and a structured evidence packet for the Agent. After reading the evidence, the Agent picks one of five actions: `Reject` / `Watch` / `Starter` / `Add` / `Exit`.
 
 For a Watch or Add call, the Agent must spell out what would invalidate the thesis. Those conditions are recorded and re-checked automatically every day.
 
-**Status**: the core flow works end to end and produces reports; currently being polished and validated with backtests.
-
----
-
-### Skill 2: U.S. Small/Mid Dislocation — bulk screening (in development)
-
-Runs a **first-pass screen across many U.S. small/mid-cap names**.
-
-Given a prepared CSV universe, it filters out hard red flags (bankruptcy, going concern, fraud, delisting risk) and surfaces names where the price has fallen harder than the fundamentals justify, outputting `Pass / Watchlist / Investigate`.
-
-It does **not** make final buy decisions — it just narrows thousands of tickers down to the ones worth a closer look. Single-stock decisions go back through Skill 1.
-
-**Status**: the deterministic screening script exists; the full concurrent subagent workflow is still in development.
+**Status**: the core flow works end to end and produces reports; currently being polished with forward-tracking deployment.
 
 ---
 
@@ -134,10 +118,8 @@ Requires Python `>= 3.11`.
 # Install
 python3 -m pip install -e .
 
-# Configure secrets (copy the template, fill in your API keys)
-cp sharing-resources/secrets/market_sentiment.secrets.example.sh \
-   sharing-resources/secrets/market_sentiment.secrets.sh
-source sharing-resources/secrets/market_sentiment.secrets.sh
+# Set the required environment variable
+export SEC_USER_AGENT="YourName your.email@example.com"
 
 # Validate config
 market-sentiment --config config/watchlist.toml preflight
@@ -146,9 +128,9 @@ market-sentiment --config config/watchlist.toml preflight
 market-sentiment --config config/watchlist.toml run-daily
 ```
 
-API keys needed: Tiger Trade, Alpha Vantage, FRED, SEC (user agent), DeepSeek — all have free tiers. See `sharing-resources/references/configuration_and_secrets.md` for details.
+**Only needed**: `SEC_USER_AGENT` environment variable (format: `"Name email@example.com"` — SEC uses this to identify your script).
 
-**Don't want to do this by hand?** Hand the repo to Claude Code and say "set up the environment so I can run market-sentiment-research" — it'll read the docs, ask you for keys, write the config, and run preflight until everything passes.
+**Don't want to do this by hand?** Hand the repo to Claude Code and say "set up the environment so I can run market-sentiment-research" — it'll read the docs, ask you for information, write the config, and run preflight until everything passes.
 
 ---
 

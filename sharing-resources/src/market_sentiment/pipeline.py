@@ -265,11 +265,6 @@ class DailyPipeline:
             context.social_snapshot = social_collection.snapshot
             context.social_posts_sample = social_collection.posts
             all_statuses.extend(social_collection.statuses)
-            if self.config.options.enabled:
-                options_payload = self._fetch_options_with_recovery(context.security.ticker, run_date)
-                context.options_snapshot = options_payload.data
-                context.options_source_statuses = [options_payload.status]
-                all_statuses.append(options_payload.status)
             # Fetch next earnings date — this lane MUST NOT block the pipeline and MUST NOT mark partial_coverage
             # So we add the status to all_statuses for reporting, but NOT to context.source_statuses
             try:
@@ -358,30 +353,6 @@ class DailyPipeline:
     def _fetch_macro(self, run_date: date) -> tuple[list[MacroObservation], list[SourceStatus]]:
         observations: list[MacroObservation] = []
         statuses = []
-        for name, series_id in self.config.fred_series.items():
-            try:
-                payload = self.fred.fetch_series(name, series_id, run_date)
-            except Exception as exc:
-                payload = SourcePayload(
-                    data=[],
-                    status=self._failure_status("fred", f"Failed to fetch FRED series {name}: {exc}"),
-                )
-            filtered = self._filter_macro_as_of(payload.data, run_date)
-            self.storage.upsert_macro(filtered)
-            observations.extend(filtered[-5:])
-            statuses.append(payload.status)
-        for name, series_id in self.config.eia_series.items():
-            try:
-                payload = self.eia.fetch_series(name, series_id, run_date)
-            except Exception as exc:
-                payload = SourcePayload(
-                    data=[],
-                    status=self._failure_status("eia", f"Failed to fetch EIA series {name}: {exc}"),
-                )
-            filtered = self._filter_macro_as_of(payload.data, run_date)
-            self.storage.upsert_macro(filtered)
-            observations.extend(filtered[-5:])
-            statuses.append(payload.status)
         return observations, statuses
 
     def _price_fetch_plan(self, ticker: str, run_date: date) -> tuple[bool, int]:
@@ -434,7 +405,7 @@ class DailyPipeline:
         lookback_days = PRICE_HISTORY_TARGET_DAYS if needs_deep else incremental_lookback_days
 
         payload, statuses = self._fetch_prices_with_fallback(
-            ticker, run_date, lookback_days=lookback_days, deep=needs_deep
+            ticker, run_date, lookback_days=lookback_days
         )
         fresh_bars = self._filter_prices_as_of(payload.data, run_date)
         self.storage.upsert_prices(fresh_bars)
@@ -451,49 +422,24 @@ class DailyPipeline:
         run_date: date,
         *,
         lookback_days: int | None = None,
-        deep: bool = False,
     ):
-        """Try Tiger -> Yahoo -> Alpha Vantage -> Stooq -> SQLite cache, in order.
+        """Try Yahoo -> Stooq -> SQLite cache, in order.
 
-        ``lookback_days`` (Tiger/Yahoo) and ``deep`` (Alpha Vantage's full/compact
-        toggle) let the caller ask for a shallow incremental top-up or a full
-        multi-year backfill; omitting both preserves each source's own historical
-        default window (unchanged behavior for any caller that doesn't need depth
-        control). Stooq has no windowing parameter — it already serves whatever full
-        history it has on every call, so it's left as-is.
+        ``lookback_days`` (Yahoo) lets the caller ask for a shallow incremental
+        top-up or a full multi-year backfill; omitting it preserves Yahoo's default
+        historical window. Stooq has no windowing parameter — it already serves
+        whatever full history it has on every call, so it's left as-is.
         """
         try:
-            primary = self.tiger.fetch_daily_prices(ticker, run_date, lookback_days=lookback_days)
+            primary = self.yahoo.fetch_daily_prices(ticker, run_date, lookback_days=lookback_days)
         except Exception as exc:
             primary = SourcePayload(
                 data=[],
-                status=self._failure_status("tiger", f"Failed to fetch prices for {ticker}: {exc}"),
+                status=self._failure_status("yahoo_chart", f"Failed to fetch prices for {ticker}: {exc}"),
             )
         statuses = [primary.status]
         if primary.status.success and primary.data:
             return primary, statuses
-
-        try:
-            fallback_yahoo = self.yahoo.fetch_daily_prices(ticker, run_date, lookback_days=lookback_days)
-        except Exception as exc:
-            fallback_yahoo = SourcePayload(
-                data=[],
-                status=self._failure_status("yahoo_chart", f"Failed to fetch prices for {ticker}: {exc}"),
-            )
-        statuses.append(fallback_yahoo.status)
-        if fallback_yahoo.status.success and fallback_yahoo.data:
-            return fallback_yahoo, statuses
-
-        try:
-            fallback_av = self.alpha_vantage.fetch_daily_prices(ticker, run_date, deep=deep)
-        except Exception as exc:
-            fallback_av = SourcePayload(
-                data=[],
-                status=self._failure_status("alpha_vantage", f"Failed to fetch prices for {ticker}: {exc}"),
-            )
-        statuses.append(fallback_av.status)
-        if fallback_av.status.success and fallback_av.data:
-            return fallback_av, statuses
 
         try:
             fallback_stooq = self.stooq.fetch_daily_prices(ticker, run_date)
@@ -509,7 +455,7 @@ class DailyPipeline:
         if fallback_stooq.status.success and fallback_stooq.data:
             return fallback_stooq, statuses
 
-        # When Tiger, Yahoo, AV, and Stooq all have no data:
+        # When Yahoo and Stooq both have no data:
         cached = self.storage.read_cached_prices(
             ticker, days_back=PRICE_HISTORY_TARGET_DAYS, reference_date=run_date
         )
@@ -519,7 +465,7 @@ class DailyPipeline:
                 source="daily_prices_cache",
                 success=True,
                 partial=True,
-                message=f"using cached prices through {latest.isoformat()}; Tiger+Yahoo+AV+Stooq all unavailable",
+                message=f"using cached prices through {latest.isoformat()}; Yahoo+Stooq all unavailable",
                 source_url=None,
                 ingested_at=datetime.now(timezone.utc),
             )
@@ -565,14 +511,6 @@ class DailyPipeline:
                 ),
             )
 
-    def _fetch_options_with_recovery(self, ticker: str, run_date: date) -> SourcePayload[OptionSnapshot | None]:
-        try:
-            return self.options.fetch_realtime_chain(ticker, run_date)
-        except Exception as exc:
-            return SourcePayload(
-                data=None,
-                status=self._failure_status("alpha_vantage_options", f"Failed to fetch options for {ticker}: {exc}"),
-            )
 
     @staticmethod
     def _filter_prices_as_of(prices: list[PriceBar], run_date: date) -> list[PriceBar]:
@@ -672,17 +610,6 @@ class DailyPipeline:
             context.social_source_statuses = [
                 self._failure_status("social", f"Social lane failed for {ticker}: {exc}")
             ]
-
-        # --- Options lane (only if enabled) ---
-        if self.config.options.enabled:
-            try:
-                options_payload = self._fetch_options_with_recovery(ticker, run_date)
-                context.options_snapshot = options_payload.data
-                context.options_source_statuses = [options_payload.status]
-            except Exception as exc:
-                context.options_source_statuses = [
-                    self._failure_status("alpha_vantage_options", f"Options lane failed for {ticker}: {exc}")
-                ]
 
         # --- Earnings calendar (non-blocking) ---
         try:
