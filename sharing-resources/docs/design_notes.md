@@ -2,12 +2,12 @@
 
 ## Product Intent
 
-This repository supports two related but distinct Agent Skills:
+This repository supports one Agent Skill: end-of-day market sentiment research for specific stocks.
 
-- end-of-day market sentiment research for specific stocks
-- broad U.S. small/mid-cap dislocation candidate screening
-
-Both need shared runtime infrastructure, but they should not collapse into one Skill because they answer different questions.
+It previously also carried a second Skill, `us-smallmid-dislocation`, for broad U.S. small/mid-cap
+dislocation candidate screening. That Skill was removed (its history remains on the `smallmid-dev`
+branch — see `docs/architecture.md` "What Changed"); the shared-runtime split below is kept because
+the runtime engine is still reusable by a future screening Skill, not because one currently exists.
 
 ## Design Principles
 
@@ -24,7 +24,8 @@ Both need shared runtime infrastructure, but they should not collapse into one S
 
 ## Why Sharing Resources
 
-The two Skills can share:
+Keeping this infrastructure under `sharing-resources/` rather than inside the Skill folder means any
+future additional Skill (e.g. a revived small/mid screening Skill) could reuse:
 
 - the Python runtime engine
 - tests
@@ -33,10 +34,6 @@ The two Skills can share:
 - generated data conventions
 - JSON redaction
 
-Those resources live under `sharing-resources/` so each Skill stays focused.
-
 ## Future Direction
 
-- add a repeatable prepared-universe builder for U.S. small/mid screens
-- add a target-pool sync script that converts `config/watchlist.toml` into `skills/market-sentiment-research/defaults/targets.toml`
 - add richer local report indexing for previous decision audits

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -423,3 +423,71 @@ class TigerClientSuccessTests(TestCase):
                 call_kwargs = mock_quote_client_class.call_args.kwargs
                 self.assertIn("is_grab_permission", call_kwargs)
                 self.assertFalse(call_kwargs["is_grab_permission"])
+
+
+class BarsLimitForLookbackTests(TestCase):
+    """Unit tests for the lookback-days -> get_bars(limit=...) scaling helper."""
+
+    def test_default_lookback_yields_historical_limit(self) -> None:
+        from market_sentiment.sources.tiger import _DEFAULT_BARS_LIMIT, _DEFAULT_LOOKBACK_DAYS, _bars_limit_for_lookback
+
+        self.assertEqual(_bars_limit_for_lookback(_DEFAULT_LOOKBACK_DAYS), _DEFAULT_BARS_LIMIT)
+
+    def test_five_year_lookback_scales_up_and_is_capped(self) -> None:
+        from market_sentiment.sources.tiger import _MAX_BARS_PER_REQUEST, _bars_limit_for_lookback
+
+        limit = _bars_limit_for_lookback(5 * 365)
+        self.assertGreater(limit, 251)
+        self.assertLessEqual(limit, _MAX_BARS_PER_REQUEST)
+
+    def test_short_lookback_never_drops_below_historical_default(self) -> None:
+        from market_sentiment.sources.tiger import _DEFAULT_BARS_LIMIT, _bars_limit_for_lookback
+
+        self.assertEqual(_bars_limit_for_lookback(7), _DEFAULT_BARS_LIMIT)
+
+
+class TigerLookbackDaysTests(TestCase):
+    """Tests that lookback_days reshapes the begin_time/limit passed to get_bars()."""
+
+    def _run_with_lookback(self, lookback_days: int | None):
+        with tempfile.TemporaryDirectory() as tmp:
+            storage = Storage(Path(tmp) / "db.sqlite3", Path(tmp))
+            storage.init_db()
+            http_client = FakeHttpClient()
+
+            with tempfile.TemporaryDirectory() as props_dir:
+                props_file = Path(props_dir) / "tiger_openapi_config.properties"
+                props_file.touch()
+
+                fake_df = pd.DataFrame({
+                    'time': [1715596800000],
+                    'open': [100.0], 'high': [101.0], 'low': [99.5], 'close': [100.5],
+                    'volume': [1000000.0],
+                })
+                mock_modules = _create_mock_tigeropen_modules()
+                mock_quote_client_class = mock_modules["tigeropen.quote.quote_client"].QuoteClient
+                mock_quote_instance = Mock()
+                mock_quote_client_class.return_value = mock_quote_instance
+                mock_quote_instance.get_bars.return_value = fake_df
+
+                run_date = date(2026, 5, 15)
+                with patch.dict(os.environ, {"TIGER_CONFIG_PATH": props_dir}, clear=True):
+                    with patch.dict(sys.modules, mock_modules):
+                        client = TigerClient(http_client, storage)
+                        if lookback_days is None:
+                            payload = client.fetch_daily_prices("AAPL", run_date)
+                        else:
+                            payload = client.fetch_daily_prices("AAPL", run_date, lookback_days=lookback_days)
+
+                self.assertTrue(payload.status.success)
+                return run_date, mock_quote_instance.get_bars.call_args.kwargs
+
+    def test_omitting_lookback_days_preserves_historical_window_and_limit(self) -> None:
+        run_date, call_kwargs = self._run_with_lookback(None)
+        self.assertEqual(call_kwargs["begin_time"], (run_date - timedelta(days=150)).isoformat())
+        self.assertEqual(call_kwargs["limit"], 251)
+
+    def test_deep_lookback_days_widens_begin_time_and_limit(self) -> None:
+        run_date, call_kwargs = self._run_with_lookback(1825)
+        self.assertEqual(call_kwargs["begin_time"], (run_date - timedelta(days=1825)).isoformat())
+        self.assertGreater(call_kwargs["limit"], 251)

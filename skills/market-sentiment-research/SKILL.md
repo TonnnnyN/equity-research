@@ -63,6 +63,47 @@ Independent scoring is mandatory:
 4. `bucket_scores` numeric values (e.g., `social_rebound: 0/10`) are mechanical and frequently noisy when sample sizes are small. Treat them as one observation, not as truth. Re-judge the dimension from the raw `social_summary` (especially `representative_posts`, `recent_stance`, `top_bullish_themes`, `top_bearish_themes`) when their sample is thin.
 5. Your output's final action (`Reject` / `Watch` / `Starter` / `Add` / `Exit`) is **your** judgement, not the rule engine's. Quote specific Layer 2 evidence (dates, numbers, post excerpts) when justifying it.
 
+## Valuation Layer: A Gate, Not a Second Opinion
+
+`review_packets.json`'s `valuation_inputs.models` (populated when `valuation_inputs.derived` is available) is the output of a 12-model valuation layer built on top of the existing `valuation_inputs.fundamentals` / `valuation_inputs.derived` Layer 2 evidence. It is Layer 2 advisory evidence, exactly like `analyst_summary`: it never enters `bucket_scores`, never sets `partial_coverage`, and can never raise or fail the pipeline. When the router could not build `ValuationDerived` at all, `valuation_inputs.models` is `null` — treat that exactly like a missing lane, not like a "neutral" reading.
+
+**The two systems answer different questions and combine as a constraint, not as a second opinion.** The 110-point rule engine (`bucket_scores`, `rule_engine_precheck`) answers *"is this the moment to act?"* — stabilisation, red flags, sentiment turn, sector-vs-idiosyncratic. The valuation layer answers *"at this price, is acting worth it?"* Neither replaces the other; read both and combine them with this table:
+
+| scoring | valuation | action |
+|---|---|---|
+| passes | cheap | act; margin of safety sizes the position |
+| passes | expensive | **downgrade** (`Add` → `Starter`/`Watch`) |
+| fails | cheap | stay at `Watch`, record the valuation anchor |
+| fails | expensive | `Reject` |
+
+**Rule: the valuation gate is one-directional.** Valuation may only *lower* an action, never raise one. A cheap multiple must never lift `Watch` to `Add`. The scoring engine's inputs are objective disclosures and price behaviour; valuation rests on assumptions (a discount rate, a growth path, a peer set). An assumption-driven model must never be allowed to override an evidence-driven veto — a hard veto from `rule_engine_precheck.veto_reason` or a scoring-engine `Reject`/`Watch` stays capped regardless of how cheap the stock looks.
+
+### How to read `valuation_inputs.models`, in order
+
+1. **`router.enabled_models` and `router.excluded`.** The excluded list, with its per-model reason, is equally important as what ran — it tells you which lenses are structurally unavailable for this name (e.g., DCF variants excluded outright when `ttm_fcf` is negative) versus merely skipped for missing data on this run.
+2. **`reverse_dcf` as the primary lens.** It does not produce a fair-value target. It solves, from the CURRENT enterprise value, for the FCF growth rate the market is implicitly pricing in at each discount rate in `router.profile.discount_rates`. Your job is to judge whether that implied growth is pessimistic or optimistic given the Layer 2 evidence you already gathered (fundamentals trend, disclosure tone, catalyst path) — not to produce your own price target.
+3. **The downside models** (`net_cash_floor`, `sum_of_the_parts`, `cash_runway`) — where is the floor, and how much of the current price is covered by liquid assets alone.
+4. **Quality and risk** (`piotroski_f_score`, `altman_z_score`, `beneish_m_score`) — is the balance sheet and earnings quality behind the valuation trustworthy, or is the cheapness a symptom of deteriorating fundamentals.
+5. **Only then, the assumption-heavy grids** (`two_stage_dcf`, `owner_earnings`, `three_scenario_expected_value`, and the relative-valuation models `own_history_percentile` / `peer_comparison`). These require you to pick or accept explicit growth/discount assumptions or a peer set — read them last, and read them as ranges, never as a single number.
+
+**Never quote a single fair value.** Where a model returns a grid or a range, the report must carry the range and the assumptions behind it, not a collapsed point. A precise-looking number like "$94.32" reads as a fact when it is a function of guessed inputs — always show the grid (discount rate × growth rate, or bear/base/bull) alongside the number you're citing.
+
+**When beta is unreliable** (the common case — check `valuation_inputs.derived.beta.reliable`; e.g. Zoom's R² of 0.055 on a ~6-month daily window), `router.profile.discount_rate_method` reads `sector_default_range`, not `capm_derived_range`: the discount rate is a documented sector-default *range*, never a CAPM point estimate. State in the report which method was used (`router.profile.discount_rate_method`) and quote the range, not a single rate.
+
+### Worked example — Zoom (ZM), 2026-08-17
+
+Price $105.96, market cap $31.81B (diluted 300.2M shares), EV $24.09B, net cash $7.72B (24.3% of cap), non-operating assets $1.88B (5.9%).
+
+- `router`: beta unreliable → `sector_default_range` (9% / 11% / 13%). `enabled_models` = 11 of 12; `excluded` = `cash_runway` ("ttm_fcf is positive").
+- `reverse_dcf`: implied FCF growth **−0.8% / +2.8% / +6.0%** at 9% / 11% / 13% discount rates — the market is pricing in roughly flat-to-modest growth, not a growth story and not a burn-out.
+- `sum_of_the_parts`: implied core business **$75.87/share** (price $105.96 − net cash $25.72 − haircut non-op stake $4.37) — over 70% of the current price is core-business value, not cash.
+- `net_cash_floor`: liquid assets **$25.72/share**, NCAV $21.26/share — the hard downside floor if the core business were worth zero.
+- `owner_earnings`: SBC drag ratio **0.624** (headline FCF $1.961B → $1.223B ex-SBC) — any owner-earnings-based valuation should be read off the SBC-adjusted grid, not the headline one.
+- `altman_z_score`: **10.61, "safe"** (Z'' variant — book equity used in X4, correct for this variant, not a bug).
+- `piotroski_f_score`: **5/8** (denominator reduced, not padded, because Zoom has no long-term debt to score the leverage criterion against — read as 5/8, never "5/9").
+- `three_scenario_expected_value`: bear **$73.92** / base **$124.93** / bull **$210.78** — report the three values and the probability weights, never the single probability-weighted number in isolation.
+- Skipped: `cash_runway` (router: FCF positive — cash runway is meaningless when FCF is positive), `beneish_m_score` (3 required concepts not extracted from SEC data for this filer), `peer_comparison` (only produces output when same-layer peer contexts are available on this run — check `router.excluded` / the model's own `skip_reason` for whether peers were passed).
+
 ## Troubleshooting & Self-Recovery
 
 ### When you hit any error, run preflight first
@@ -141,17 +182,28 @@ Inspect daily outputs under `data/reports/<date>/`:
 
 ## Output Shape
 
+Lead with **one action, not two verdicts.** The rule-engine state and the valuation gate result are inputs to the final action, not separate conclusions to present side by side — the reader needs a single `Reject` / `Watch` / `Starter` / `Add` / `Exit`, not a rule-engine verdict and a valuation verdict left for them to reconcile.
+
 Lead with:
 
 - conclusion
 - action
-- decision snapshot
+- decision snapshot:
+  - rule-engine score → suggested action (`rule_engine_precheck.state`, `total_score`)
+  - valuation summary → gate result: `pass` (valuation does not restrain the action) or `downgrade` (valuation pulled the action down, and from what to what)
+  - **final action** (post-gate; this is the one action from the lead)
+  - when the final action is `Starter` or `Add`: a **position-size hint** tied to the margin of safety (e.g., current price vs. `net_cash_floor` / `sum_of_the_parts` / the bear case in `three_scenario_expected_value` — a thinner margin of safety implies a smaller starting size, never a fixed size regardless of valuation)
 
 Then provide:
 
 - event calendar
 - trigger and attribution
 - evidence by lane
+- **valuation card**:
+  - models used (`router.enabled_models`) and models excluded, with reasons (`router.excluded`)
+  - key assumptions (discount-rate method and range, growth assumptions, peer set if used)
+  - the value range produced (never a single number — quote the grid or the bear/base/bull spread)
+  - where the current price sits inside that range
 - risks and invalidation
 - rerate conditions when relevant
 - source links
@@ -186,6 +238,10 @@ Whenever you issue a `Watch`, `Starter`, or `Add` recommendation, you MUST also 
 - `days_to_earnings` — trading/calendar days to next earnings (None-safe)
 
 **Comparators:** `<`, `<=`, `>`, `>=`, `==`
+
+**Valuation anchors are required when the valuation lane produced usable output.** All six allowed metrics above are relative (to a reference close, to SMA20, to a rolling low) or purely time-based — none of them expresses "what the business is worth." When `valuation_inputs.models` was not `null` for this ticker's review packet, at least one `invalidate_if` or `rerate_if` condition MUST be anchored to a valuation level rather than purely to price action. `close` already accepts an absolute threshold — use it with a valuation-derived number rather than inventing a new metric (e.g. `close <= <net_cash_floor per-share liquid assets>` or `close >= <a bull-case per-share value>`). For Zoom on 2026-08-17: `close <= 25.72` (liquid-asset floor breached — the thesis is broken) or `close >= 210` (bull-case value reached — re-evaluate taking profit). This is the first time the daily tracker can check a thesis against what the business is worth, rather than only against momentum — without it, every invalidation is a stop-loss and every re-rate is a technical trigger, and the thesis itself is never actually tested.
+
+Only add a new metric to `decision_schema.py` if a valuation anchor genuinely cannot be expressed as an absolute `close` threshold — and if you do, implement its evaluation in the deterministic tracker code (`decision_tracker.py`), not only in the schema.
 
 The `note` field is a human-readable annotation ONLY. It is NEVER evaluated; the structured `metric/comparator/threshold` fields are the operative rule enforced by deterministic pipeline code.
 

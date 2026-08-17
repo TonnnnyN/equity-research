@@ -66,7 +66,11 @@ class ConfigTests(TestCase):
 
         self.assertEqual(config.retention.report_days, 90)
         self.assertEqual(config.retention.raw_payload_days, 30)
-        self.assertEqual(config.retention.daily_price_days, 365)
+        # watchlist.toml pins this explicitly to the ~5y price-history target
+        # (config.PRICE_HISTORY_TARGET_DAYS) plus a 90-day buffer — see
+        # config.DEFAULT_DAILY_PRICE_RETENTION_DAYS. A shorter retention window would
+        # prune deep-backfilled price history right back out.
+        self.assertEqual(config.retention.daily_price_days, 1915)
         self.assertEqual(config.retention.fundamental_days, 730)
         self.assertEqual(config.retention.social_post_days, 90)
         self.assertEqual(config.retention.social_snapshot_days, 180)

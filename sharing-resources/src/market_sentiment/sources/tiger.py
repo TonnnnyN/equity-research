@@ -19,6 +19,32 @@ os.environ.setdefault("SSL_CERT_FILE", _certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", _certifi.where())
 
 
+_DEFAULT_LOOKBACK_DAYS = 150  # historical default: ~150 calendar days back
+_DEFAULT_BARS_LIMIT = 251  # historical default: covers ~1 year of trading days
+_TRADING_DAYS_PER_YEAR = 252
+_LIMIT_SLACK_BARS = 20  # headroom for holidays/weekends landing inside the window
+
+# Tiger's get_bars() docstring (tigeropen SDK) documents `page_token` for pagination
+# but does not document a hard per-call cap on `limit`. This project has no live
+# TIGER_CONFIG_PATH available to verify the true server-side ceiling, so this cap is a
+# conservative, UNVERIFIED assumption (~5 years of trading days + slack). If Tiger's
+# real per-call cap is lower, a deep backfill will silently come back short of 5 years
+# for Tiger specifically — the fallback chain still degrades to Yahoo/AV/Stooq/cache
+# for whatever Tiger doesn't cover, but pagination via `page_token` would be needed to
+# make Tiger itself serve the full depth in one ticker's history.
+_MAX_BARS_PER_REQUEST = 1250
+
+
+def _bars_limit_for_lookback(lookback_days: int) -> int:
+    """Scale the `limit` passed to get_bars() to the requested lookback window.
+
+    Estimates trading days from calendar days (~252/365) plus slack, floored at the
+    historical default (251) and capped at `_MAX_BARS_PER_REQUEST` (see caveat above).
+    """
+    estimated_trading_days = int(lookback_days / 365 * _TRADING_DAYS_PER_YEAR) + _LIMIT_SLACK_BARS
+    return min(max(estimated_trading_days, _DEFAULT_BARS_LIMIT), _MAX_BARS_PER_REQUEST)
+
+
 def _to_tiger_symbol(ticker: str) -> str:
     """Convert ticker to Tiger API symbol format.
 
@@ -41,12 +67,19 @@ class TigerClient:
         self._storage = storage
         self._tiger_config_path = os.environ.get("TIGER_CONFIG_PATH")
 
-    def fetch_daily_prices(self, ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+    def fetch_daily_prices(
+        self, ticker: str, run_date: date, *, lookback_days: int | None = None
+    ) -> SourcePayload[list[PriceBar]]:
         """Fetch daily K-line prices from Tiger API.
 
         Args:
             ticker: Stock ticker (e.g., 'AAPL', '9660.HK')
             run_date: Reference date for the fetch
+            lookback_days: How many calendar days of history to request, counted back
+                from ``run_date``. Defaults to the historical 150-day window when
+                ``None``. The `limit` passed to the SDK's ``get_bars`` is scaled to
+                match (see ``_bars_limit_for_lookback``); the default lookback still
+                produces the historical ``limit=251``.
 
         Returns:
             SourcePayload with list of PriceBar objects or empty list on failure
@@ -163,8 +196,10 @@ class TigerClient:
         # Convert ticker to Tiger symbol format
         tiger_symbol = _to_tiger_symbol(ticker)
 
-        # Calculate date range: ~150 days back to cover ~100 trading days
-        begin_date = run_date - timedelta(days=150)
+        # Calculate date range and matching bar limit for the requested lookback.
+        lookback = lookback_days if lookback_days is not None else _DEFAULT_LOOKBACK_DAYS
+        begin_date = run_date - timedelta(days=lookback)
+        bars_limit = _bars_limit_for_lookback(lookback)
 
         # Fetch daily K-line data
         try:
@@ -173,7 +208,7 @@ class TigerClient:
                 period="day",
                 begin_time=begin_date.isoformat(),
                 end_time=run_date.isoformat(),
-                limit=251,  # Default limit covers up to ~1 year of trading days
+                limit=bars_limit,
                 right=RightOption.br_forward,  # Back-adjust for splits/dividends to today's basis
             )
         except Exception as exc:

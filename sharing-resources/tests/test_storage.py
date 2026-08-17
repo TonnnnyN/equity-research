@@ -192,6 +192,77 @@ class StorageTests(TestCase):
             for bar in result:
                 self.assertIsInstance(bar, PriceBar)
 
+    def test_read_cached_prices_reference_date_anchors_cutoff_not_wallclock_today(self) -> None:
+        """A caller computing a window relative to a specific run_date (a backtest, a
+        delayed run, a fixed-date test) must get a cutoff anchored to that run_date —
+        not silently to wall-clock "today", which would wrongly exclude bars that are
+        within `days_back` of run_date but not within `days_back` of today."""
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            run_date = date(2020, 6, 15)  # deliberately far from wall-clock "today"
+            bar_date = run_date - timedelta(days=25)  # within 30 days of run_date...
+            storage.upsert_prices(
+                [
+                    PriceBar(
+                        ticker="OLDX",
+                        trading_date=bar_date,
+                        open=1.0,
+                        high=1.0,
+                        low=1.0,
+                        close=1.0,
+                        volume=1,
+                        source="test",
+                    )
+                ]
+            )
+
+            # ...but obviously nowhere near 30 days of the real "today".
+            without_reference = storage.read_cached_prices("OLDX", days_back=30)
+            self.assertEqual(without_reference, [])
+
+            with_reference = storage.read_cached_prices("OLDX", days_back=30, reference_date=run_date)
+            self.assertEqual(len(with_reference), 1)
+            self.assertEqual(with_reference[0].trading_date, bar_date)
+
+    def test_get_earliest_and_latest_cached_price_date_return_none_when_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            self.assertIsNone(storage.get_earliest_cached_price_date("NOPE"))
+            self.assertIsNone(storage.get_latest_cached_price_date("NOPE"))
+
+    def test_get_earliest_and_latest_cached_price_date_return_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            storage = Storage(data_dir / "state.db", data_dir)
+            storage.init_db()
+
+            base = date(2020, 1, 1)
+            bars = [
+                PriceBar(
+                    ticker="AAPL",
+                    trading_date=base + timedelta(days=offset),
+                    open=100.0,
+                    high=101.0,
+                    low=99.0,
+                    close=100.5,
+                    volume=1000,
+                    source="test",
+                )
+                for offset in (0, 10, 500, 1800)
+            ]
+            storage.upsert_prices(bars)
+
+            self.assertEqual(storage.get_earliest_cached_price_date("AAPL"), base)
+            self.assertEqual(storage.get_latest_cached_price_date("AAPL"), base + timedelta(days=1800))
+            # A different ticker with no rows must not see AAPL's bounds.
+            self.assertIsNone(storage.get_earliest_cached_price_date("MSFT"))
+
     def test_upsert_and_read_active_decision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

@@ -963,16 +963,16 @@ eia_natural_gas_route = "/v2/natural-gas/pri/sum/data/"
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.config.social.enabled = False
 
-            def tiger_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def tiger_failure(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(data=[], status=SourceStatus(source="tiger", success=False, partial=True, message="no data"))
 
-            def yahoo_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def yahoo_failure(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(data=[], status=SourceStatus(source="yahoo_chart", success=False, partial=True, message="no data"))
 
-            def primary_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def primary_failure(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(data=[], status=SourceStatus(source="alpha_vantage", success=False, partial=True, message="missing key"))
 
-            def stooq_success(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def stooq_success(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(
                     data=[
                         PriceBar(

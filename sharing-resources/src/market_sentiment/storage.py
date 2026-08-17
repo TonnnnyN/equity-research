@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import shutil
 
-from market_sentiment.models import FilingSummaryCacheRow, FundamentalSnapshot, MacroObservation, OfficialEvent, PriceBar, SocialPost, SocialPostCacheRow, SocialSnapshot
+from market_sentiment.models import AnalystConsensusSnapshotRow, AnalystRatingActionRow, FilingSummaryCacheRow, FundamentalSnapshot, MacroObservation, OfficialEvent, PriceBar, SocialPost, SocialPostCacheRow, SocialSnapshot
 from market_sentiment.sources.social_base import SOCIAL_PROVIDER_NAMES
 
 
@@ -175,6 +175,39 @@ CREATE TABLE IF NOT EXISTS filing_summary_cache (
 CREATE INDEX IF NOT EXISTS idx_filing_summary_cache_ticker_form_type
   ON filing_summary_cache(ticker, form_type);
 
+CREATE TABLE IF NOT EXISTS analyst_consensus_snapshots (
+    ticker TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    target_mean REAL,
+    target_high REAL,
+    target_low REAL,
+    target_median REAL,
+    number_of_analysts INTEGER,
+    recommendation_key TEXT,
+    recommendation_mean REAL,
+    security_close REAL,
+    source TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY (ticker, run_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_analyst_consensus_snapshots_ticker_run_date
+  ON analyst_consensus_snapshots(ticker, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS analyst_rating_actions (
+    ticker TEXT NOT NULL,
+    firm TEXT NOT NULL,
+    action_date TEXT NOT NULL,
+    action TEXT NOT NULL,
+    from_grade TEXT,
+    to_grade TEXT,
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY (ticker, firm, action_date, to_grade)
+);
+
+CREATE INDEX IF NOT EXISTS idx_analyst_rating_actions_ticker_action_date
+  ON analyst_rating_actions(ticker, action_date DESC);
+
 CREATE TABLE IF NOT EXISTS active_decisions (
     ticker TEXT NOT NULL,
     decision_date TEXT NOT NULL,
@@ -257,8 +290,21 @@ class Storage:
             )
             conn.commit()
 
-    def read_cached_prices(self, ticker: str, *, days_back: int = 60) -> list[PriceBar]:
-        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days_back)).isoformat()
+    def read_cached_prices(
+        self, ticker: str, *, days_back: int = 60, reference_date: date | None = None
+    ) -> list[PriceBar]:
+        """Read cached bars for ``ticker`` from ``days_back`` days before ``reference_date``.
+
+        ``reference_date`` defaults to today (UTC) when omitted, preserving prior
+        behavior for existing callers. Pipeline callers computing a deep-history window
+        relative to a specific run date (which may not be "today" — a delayed run, a
+        backtest, a test fixture) should pass ``reference_date=run_date`` explicitly;
+        otherwise the cutoff is silently anchored to wall-clock "now" instead of the
+        logical as-of date, which can exclude bars that are within depth of run_date but
+        not within depth of today.
+        """
+        anchor = reference_date if reference_date is not None else datetime.now(timezone.utc).date()
+        cutoff = (anchor - timedelta(days=days_back)).isoformat()
         with closing(sqlite3.connect(self.db_path)) as conn:
             rows = conn.execute(
                 """
@@ -271,6 +317,39 @@ class Storage:
                 (ticker, cutoff),
             ).fetchall()
         return [_row_to_price_bar(row) for row in rows]
+
+    def get_earliest_cached_price_date(self, ticker: str) -> date | None:
+        """Oldest ``trading_date`` cached for ``ticker``, or ``None`` if nothing is cached.
+
+        Used to decide whether a ticker's cached price history is still shallow (e.g. a
+        legacy pre-backfill database, or a brand-new ticker) and therefore needs a deep
+        backfill, versus already covering the target depth and only needing an
+        incremental top-up.
+        """
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT MIN(trading_date) FROM daily_prices WHERE ticker = ?",
+                (ticker,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return date.fromisoformat(row[0])
+
+    def get_latest_cached_price_date(self, ticker: str) -> date | None:
+        """Newest ``trading_date`` cached for ``ticker``, or ``None`` if nothing is cached.
+
+        Used to size an incremental fetch: only the gap between this date and the run
+        date needs to be requested from the live sources, rather than re-pulling the
+        full history.
+        """
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                "SELECT MAX(trading_date) FROM daily_prices WHERE ticker = ?",
+                (ticker,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return date.fromisoformat(row[0])
 
     def upsert_events(self, events: list[OfficialEvent]) -> None:
         if not events:
@@ -550,6 +629,120 @@ class Storage:
             ).rowcount
             conn.commit()
             return rowcount
+
+    def upsert_analyst_consensus_snapshot(self, row: AnalystConsensusSnapshotRow) -> None:
+        """Idempotent on (ticker, run_date): re-running a day overwrites, not duplicates."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO analyst_consensus_snapshots
+                (ticker, run_date, target_mean, target_high, target_low, target_median,
+                 number_of_analysts, recommendation_key, recommendation_mean, security_close,
+                 source, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row.ticker,
+                    row.run_date.isoformat(),
+                    row.target_mean,
+                    row.target_high,
+                    row.target_low,
+                    row.target_median,
+                    row.number_of_analysts,
+                    row.recommendation_key,
+                    row.recommendation_mean,
+                    row.security_close,
+                    row.source,
+                    row.ingested_at.isoformat(),
+                ),
+            )
+            conn.commit()
+
+    def get_analyst_consensus_history(self, ticker: str) -> list[AnalystConsensusSnapshotRow]:
+        """Full stored consensus-snapshot history for a ticker, ascending by run_date."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker, run_date, target_mean, target_high, target_low, target_median,
+                       number_of_analysts, recommendation_key, recommendation_mean, security_close,
+                       source, ingested_at
+                FROM analyst_consensus_snapshots
+                WHERE ticker = ?
+                ORDER BY run_date ASC
+                """,
+                (ticker,),
+            ).fetchall()
+        return [_row_to_analyst_consensus_snapshot(row) for row in rows]
+
+    def upsert_analyst_rating_actions(self, rows: list[AnalystRatingActionRow]) -> None:
+        """Deduplicated on (ticker, firm, action_date, to_grade) via INSERT OR IGNORE."""
+        if not rows:
+            return
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO analyst_rating_actions
+                (ticker, firm, action_date, action, from_grade, to_grade, ingested_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row.ticker,
+                        row.firm,
+                        row.action_date.isoformat(),
+                        row.action,
+                        row.from_grade,
+                        row.to_grade,
+                        row.ingested_at.isoformat(),
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+
+    def get_analyst_rating_actions(
+        self, ticker: str, since: date | None = None
+    ) -> list[AnalystRatingActionRow]:
+        """Full stored rating-action history for a ticker, ascending by action_date."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            if since is not None:
+                rows = conn.execute(
+                    """
+                    SELECT ticker, firm, action_date, action, from_grade, to_grade, ingested_at
+                    FROM analyst_rating_actions
+                    WHERE ticker = ? AND action_date >= ?
+                    ORDER BY action_date ASC
+                    """,
+                    (ticker, since.isoformat()),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT ticker, firm, action_date, action, from_grade, to_grade, ingested_at
+                    FROM analyst_rating_actions
+                    WHERE ticker = ?
+                    ORDER BY action_date ASC
+                    """,
+                    (ticker,),
+                ).fetchall()
+        return [_row_to_analyst_rating_action(row) for row in rows]
+
+    def get_price_on_or_before(self, ticker: str, as_of: date) -> tuple[date, float] | None:
+        """Latest (trading_date, close) with trading_date <= as_of, or None."""
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            row = conn.execute(
+                """
+                SELECT trading_date, close
+                FROM daily_prices
+                WHERE ticker = ? AND trading_date <= ?
+                ORDER BY trading_date DESC
+                LIMIT 1
+                """,
+                (ticker, as_of.isoformat()),
+            ).fetchone()
+        if row is None:
+            return None
+        return date.fromisoformat(row[0]), row[1]
 
     def upsert_active_decision(
         self,
@@ -963,6 +1156,35 @@ def _row_to_social_post_cache(row: tuple) -> SocialPostCacheRow:
         one_line_summary=row[7],
         engagement_score=row[8],
         ingested_at=datetime.fromisoformat(row[9]),
+    )
+
+
+def _row_to_analyst_consensus_snapshot(row: tuple) -> AnalystConsensusSnapshotRow:
+    return AnalystConsensusSnapshotRow(
+        ticker=row[0],
+        run_date=date.fromisoformat(row[1]),
+        target_mean=row[2],
+        target_high=row[3],
+        target_low=row[4],
+        target_median=row[5],
+        number_of_analysts=row[6],
+        recommendation_key=row[7],
+        recommendation_mean=row[8],
+        security_close=row[9],
+        source=row[10],
+        ingested_at=datetime.fromisoformat(row[11]),
+    )
+
+
+def _row_to_analyst_rating_action(row: tuple) -> AnalystRatingActionRow:
+    return AnalystRatingActionRow(
+        ticker=row[0],
+        firm=row[1],
+        action_date=date.fromisoformat(row[2]),
+        action=row[3],
+        from_grade=row[4] or "",
+        to_grade=row[5] or "",
+        ingested_at=datetime.fromisoformat(row[6]),
     )
 
 

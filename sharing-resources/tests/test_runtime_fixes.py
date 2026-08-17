@@ -76,7 +76,7 @@ class RuntimeFixTests(TestCase):
                     [100 - (index * 0.4) for index in range(26)] + [110, 111, 112, 113],
                 )
 
-                def fetch_prices(ticker: str, _run_date: date) -> SourcePayload[list[PriceBar]]:
+                def fetch_prices(ticker: str, _run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                     payload = security_prices if ticker == "NVDA" else benchmark_prices
                     return SourcePayload(
                         data=payload,
@@ -126,6 +126,10 @@ class RuntimeFixTests(TestCase):
                 pipeline.stooq.fetch_daily_prices = unexpected_fallback  # type: ignore[method-assign]
                 pipeline.sec.fetch_recent_events = fetch_events  # type: ignore[method-assign]
                 pipeline.sec.fetch_company_facts = fetch_companyfacts  # type: ignore[method-assign]
+                pipeline.sec.fetch_valuation_fundamentals = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
+                    data=None,
+                    status=SourceStatus(source="sec_valuation_fundamentals", success=False, partial=True, message="stubbed"),
+                )
 
                 report = pipeline.run(run_date)
 
@@ -153,7 +157,7 @@ class RuntimeFixTests(TestCase):
                 security_prices = make_price_bars("NVDA", [100 - (index * 1.2) for index in range(26)])
                 benchmark_prices = make_price_bars("SOXX", [100 - (index * 0.4) for index in range(26)])
 
-                def fetch_prices(ticker: str, _run_date: date) -> SourcePayload[list[PriceBar]]:
+                def fetch_prices(ticker: str, _run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                     if ticker == "SOXX":
                         return SourcePayload(
                             data=[],
@@ -164,7 +168,7 @@ class RuntimeFixTests(TestCase):
                         status=SourceStatus(source="alpha_vantage:NVDA", success=True, message="ok"),
                     )
 
-                def fetch_fallback(ticker: str, _run_date: date) -> SourcePayload[list[PriceBar]]:
+                def fetch_fallback(ticker: str, _run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                     payload = benchmark_prices if ticker == "SOXX" else security_prices
                     return SourcePayload(
                         data=payload,
@@ -188,6 +192,10 @@ class RuntimeFixTests(TestCase):
                 pipeline.sec.fetch_company_facts = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
                     data=None,
                     status=SourceStatus(source="sec:facts", success=True, message="ok"),
+                )
+                pipeline.sec.fetch_valuation_fundamentals = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
+                    data=None,
+                    status=SourceStatus(source="sec_valuation_fundamentals", success=False, partial=True, message="stubbed"),
                 )
 
                 report = pipeline.run(run_date)

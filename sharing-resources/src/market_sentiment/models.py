@@ -104,6 +104,142 @@ class FundamentalSnapshot:
 
 
 @dataclass(slots=True)
+class ConceptDatapoint:
+    """One SEC XBRL datapoint for a single concept, deduped to the newest ``filed`` per ``end``."""
+
+    end: date
+    filed: date
+    value: float
+    form: str
+    fy: int | None = None
+    fp: str | None = None
+    frame: str | None = None
+    start: date | None = None
+    derived: bool = False
+    derived_from: str | None = None
+
+
+@dataclass(slots=True)
+class ConceptHistory:
+    """Up to 20 quarters of history for one canonical valuation concept.
+
+    ``tag`` records which us-gaap tag (from the ordered candidate list) actually matched,
+    so a consumer can see exactly which line item produced the numbers.
+    """
+
+    concept: str
+    tag: str
+    unit: str
+    datapoints: list[ConceptDatapoint] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ShareClassEntry:
+    value: float
+    as_of: date
+
+
+@dataclass(slots=True)
+class ValuationFundamentals:
+    """Richer SEC companyfacts extraction for the valuation data layer.
+
+    Deliberately separate from ``FundamentalSnapshot`` so existing callers of that
+    dataclass and ``bucket_scores`` behaviour are unaffected. Layer 2 evidence only.
+    """
+
+    ticker: str
+    cik: str | None
+    source: str
+    source_url: str | None
+    ingested_at: datetime
+    concepts: dict[str, ConceptHistory] = field(default_factory=dict)
+    cover_page_shares: float | None = None
+    cover_page_share_classes: list[ShareClassEntry] = field(default_factory=list)
+    cover_page_meta: dict[str, Any] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+    # Populated when a concept's tag-selection had to fall back to a candidate tag
+    # outside sec.py's staleness window (no fresher candidate reported any data) --
+    # see sec.py's _STALE_TAG_WINDOW_DAYS / _select_tag_order. Mirrors the
+    # data_gaps convention on ValuationDerived so a stale read is visible through the
+    # same kind of always-populated list, never only inferable from parsing `notes`.
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ProvenancedValue:
+    """A derived number that always states which raw inputs and source produced it.
+
+    When ``value`` is None, ``reason`` explains why — never a silently substituted default.
+
+    ``caveats`` carries advisory warnings that travel WITH the number rather than only
+    living in a ``data_gaps`` list far away from it — e.g. "this concept was sourced from
+    a us-gaap tag abandoned years ago" (see ``sources/sec.py``'s stale-tag-fallback
+    handling and ``market_sentiment.valuation``'s propagation of it). A value can be
+    perfectly valid (``value`` is not None, no ``reason``) and still carry a caveat: it is
+    a real number, just one a downstream reader should treat with extra caution. Additive
+    field with a default, so every existing ``ProvenancedValue(...)`` constructor call
+    keeps working unchanged.
+    """
+
+    value: float | None
+    inputs: list[str] = field(default_factory=list)
+    source: str = ""
+    basis: str | None = None
+    reason: str | None = None
+    caveats: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class BetaEstimate:
+    beta: float | None
+    observations: int
+    r_squared: float | None
+    reason: str | None = None
+    reliable: bool = True
+
+
+@dataclass(slots=True)
+class ValuationDerived:
+    """Derived valuation inputs computed from ``ValuationFundamentals`` plus price bars.
+
+    No valuation models (DCF, scoring, ratio verdicts) live here — this is raw + derived
+    evidence only, for a later model layer to consume.
+    """
+
+    ticker: str
+    as_of: date
+    shares_used: ProvenancedValue
+    market_cap: ProvenancedValue
+    cash_and_equivalents: ProvenancedValue
+    short_term_investments: ProvenancedValue
+    long_term_investments: ProvenancedValue
+    total_liquid_assets: ProvenancedValue
+    non_operating_assets: ProvenancedValue
+    total_debt: ProvenancedValue
+    net_cash: ProvenancedValue
+    enterprise_value: ProvenancedValue
+    ttm_revenue: ProvenancedValue
+    ttm_gross_profit: ProvenancedValue
+    ttm_operating_income: ProvenancedValue
+    ttm_net_income: ProvenancedValue
+    ttm_operating_cashflow: ProvenancedValue
+    ttm_capex: ProvenancedValue
+    ttm_sbc: ProvenancedValue
+    ttm_da: ProvenancedValue
+    ttm_fcf: ProvenancedValue
+    ttm_fcf_ex_sbc: ProvenancedValue
+    ttm_ebitda: ProvenancedValue
+    ttm_income_tax_expense: ProvenancedValue
+    ttm_pretax_income_implied: ProvenancedValue
+    effective_tax_rate: ProvenancedValue
+    book_value: ProvenancedValue
+    working_capital: ProvenancedValue
+    current_ratio: ProvenancedValue
+    beta: BetaEstimate
+    data_gaps: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class MacroObservation:
     name: str
     observed_on: date
@@ -348,6 +484,47 @@ class AnalystSnapshot:
     recommendation_mean: float | None = None # 1=strong buy ... 5=sell
     trend: list[dict] = field(default_factory=list)         # recommendationTrend monthly counts
     recent_changes: list[AnalystRatingChange] = field(default_factory=list)
+    # Derived change-over-time signals computed from stored history (days_since_*,
+    # target/price_change_pct, dispersion, lead_lag, recent_actions_90d). Populated by
+    # AnalystTargetsClient._compute_history_signals; empty when history is unavailable.
+    history_signals: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class AnalystConsensusSnapshotRow:
+    """One row per (ticker, run_date) analyst consensus snapshot.
+
+    Idempotent on (ticker, run_date) — re-running a day overwrites, not duplicates.
+    """
+
+    ticker: str
+    run_date: date
+    target_mean: float | None
+    target_high: float | None
+    target_low: float | None
+    target_median: float | None
+    number_of_analysts: int | None
+    recommendation_key: str | None
+    recommendation_mean: float | None
+    security_close: float | None
+    source: str
+    ingested_at: datetime
+
+
+@dataclass(slots=True)
+class AnalystRatingActionRow:
+    """One row per firm rating action (up/down/main/reit/init).
+
+    Deduplicated on (ticker, firm, action_date, to_grade).
+    """
+
+    ticker: str
+    firm: str
+    action_date: date
+    action: str
+    from_grade: str
+    to_grade: str
+    ingested_at: datetime
 
 
 @dataclass(slots=True)
@@ -367,6 +544,8 @@ class PipelineContext:
     options_source_statuses: list[SourceStatus] = field(default_factory=list)
     earnings_calendar: EarningsCalendar | None = None
     analyst_snapshot: AnalystSnapshot | None = None
+    valuation_fundamentals: ValuationFundamentals | None = None
+    valuation_derived: ValuationDerived | None = None
 
 
 @dataclass(slots=True)

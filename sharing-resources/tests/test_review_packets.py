@@ -4,9 +4,11 @@ from datetime import date, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
+from unittest.mock import patch
 
 from market_sentiment.models import (
     ActionState,
+    BetaEstimate,
     BucketScore,
     DailyRunReport,
     EventTag,
@@ -19,6 +21,7 @@ from market_sentiment.models import (
     PipelineContext,
     PriceBar,
     PriceWindow,
+    ProvenancedValue,
     ScoreCard,
     Security,
     SocialPost,
@@ -28,10 +31,58 @@ from market_sentiment.models import (
     SocialThemeSummary,
     SourceStatus,
     TriggerResult,
+    ValuationDerived,
 )
 from market_sentiment.manual_agent_report import render_manual_agent_report
 from market_sentiment.review_packets import build_review_packet
 from market_sentiment.storage import Storage
+
+
+def _pv(value: float | None, reason: str | None = None) -> ProvenancedValue:
+    return ProvenancedValue(value=value, reason=reason)
+
+
+def _minimal_valuation_derived(**overrides) -> ValuationDerived:
+    """A ValuationDerived with every ProvenancedValue field defaulted to value=None,
+    overridable by keyword with a raw number — mirrors test_valuation_models.py's
+    ``_derived`` builder so review-packet tests don't need the full 12-model fixture
+    machinery to get at least one model producing real STATUS_OK output."""
+    base = {
+        "ticker": "ZM",
+        "as_of": date(2026, 8, 17),
+        "shares_used": _pv(None),
+        "market_cap": _pv(None),
+        "cash_and_equivalents": _pv(None),
+        "short_term_investments": _pv(None),
+        "long_term_investments": _pv(None),
+        "total_liquid_assets": _pv(None),
+        "non_operating_assets": _pv(None),
+        "total_debt": _pv(None),
+        "net_cash": _pv(None),
+        "enterprise_value": _pv(None),
+        "ttm_revenue": _pv(None),
+        "ttm_gross_profit": _pv(None),
+        "ttm_operating_income": _pv(None),
+        "ttm_net_income": _pv(None),
+        "ttm_operating_cashflow": _pv(None),
+        "ttm_capex": _pv(None),
+        "ttm_sbc": _pv(None),
+        "ttm_da": _pv(None),
+        "ttm_fcf": _pv(None),
+        "ttm_fcf_ex_sbc": _pv(None),
+        "ttm_ebitda": _pv(None),
+        "ttm_income_tax_expense": _pv(None),
+        "ttm_pretax_income_implied": _pv(None),
+        "effective_tax_rate": _pv(None),
+        "book_value": _pv(None),
+        "working_capital": _pv(None),
+        "current_ratio": _pv(None),
+        "beta": BetaEstimate(beta=None, observations=0, r_squared=None, reliable=False, reason="no data"),
+        "data_gaps": [],
+    }
+    for key, value in overrides.items():
+        base[key] = value if (key in ("beta", "data_gaps") or isinstance(value, ProvenancedValue)) else _pv(value)
+    return ValuationDerived(**base)
 
 
 class ReviewPacketTests(TestCase):
@@ -124,7 +175,7 @@ class ReviewPacketTests(TestCase):
         packet = build_review_packet(datetime(2026, 3, 26, 14, 0, 0), context, scorecard)
 
         self.assertEqual(packet["security"]["ticker"], "MSFT")
-        self.assertEqual(packet["schema_version"], "1.2")
+        self.assertEqual(packet["schema_version"], "1.4")
         self.assertEqual(packet["rule_engine_precheck"]["state"], "Watch")
         self.assertEqual(packet["trigger_summary"]["reasons"], ["ten_day_drawdown", "fresh_low"])
         self.assertEqual(packet["trigger_summary"]["ten_day_window"]["start_date"], "2026-03-12")
@@ -901,4 +952,170 @@ class ReviewPacketTests(TestCase):
         self.assertIsNone(earnings_calendar["next_earnings_date"])
         self.assertIsNone(earnings_calendar["days_to_next_earnings"])
         self.assertIsNone(earnings_calendar["is_estimate"])
+
+    # ------------------------------------------------------------------
+    # Valuation MODEL layer wiring (valuation_models.evaluate -> valuation_inputs.models)
+    # ------------------------------------------------------------------
+
+    def _minimal_scorecard(self, security: Security, run_date: date) -> ScoreCard:
+        return ScoreCard(
+            run_date=run_date,
+            security=security,
+            event_tag=EventTag.COMPANY_SPECIFIC,
+            triggered=True,
+            trigger=TriggerResult(triggered=True, reasons=[]),
+            fundamentals=BucketScore("fundamentals", 10, 30),
+            sentiment=BucketScore("sentiment", 5, 15),
+            chain_confirmation=BucketScore("chain_confirmation", 10, 20),
+            price_flow=BucketScore("price_flow", 3, 15),
+            risk_red_flags=BucketScore("risk_red_flags", 12, 20),
+            total_score=70,
+            state=ActionState.WATCH,
+        )
+
+    def test_valuation_inputs_includes_models_key(self) -> None:
+        security = Security(ticker="ZM", name="Zoom", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 8, 17)
+        derived = _minimal_valuation_derived(
+            shares_used=300_200_000,
+            market_cap=31_810_000_000,
+            net_cash=7_720_000_000,
+            total_liquid_assets=7_720_000_000,
+            non_operating_assets=1_880_000_000,
+            enterprise_value=24_090_000_000,
+            ttm_fcf=1_961_000_000,
+        )
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+            valuation_derived=derived,
+        )
+        scorecard = self._minimal_scorecard(security, run_date)
+
+        packet = build_review_packet(datetime(2026, 8, 17, 14, 0, 0), context, scorecard)
+
+        valuation_inputs = packet["valuation_inputs"]
+        self.assertIn("models", valuation_inputs)
+        models = valuation_inputs["models"]
+        self.assertIsNotNone(models)
+        self.assertEqual(models["layer"], "advisory_layer_2_valuation_models")
+        result_names = {r["model"] for r in models["results"]}
+        self.assertEqual(len(models["results"]), 12)
+        self.assertIn("net_cash_floor", result_names)
+        net_cash_floor = next(r for r in models["results"] if r["model"] == "net_cash_floor")
+        self.assertEqual(net_cash_floor["status"], "ok")
+
+        # Layer 2 advisory-only guarantees: must not leak into scoring.
+        self.assertNotIn("models", packet["bucket_scores"])
+        self.assertFalse(packet["rule_engine_precheck"]["partial_coverage"])
+
+    def test_valuation_inputs_models_none_when_derived_missing(self) -> None:
+        security = Security(ticker="ZM", name="Zoom", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 8, 17)
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+            valuation_fundamentals=None,
+            valuation_derived=None,
+        )
+        # Force the "fundamentals or derived present" branch without a usable derived
+        # by attaching a bare, empty-ish fundamentals snapshot via a peer-comparison
+        # style attribute — simplest is just to confirm valuation_inputs is None end
+        # to end when neither is present (existing behavior preserved).
+        packet = build_review_packet(datetime(2026, 8, 17, 14, 0, 0), context, self._minimal_scorecard(security, run_date))
+        self.assertIsNone(packet["valuation_inputs"])
+
+    def test_peer_contexts_enable_peer_comparison_model(self) -> None:
+        security = Security(ticker="ZM", name="Zoom", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        peer_security = Security(ticker="PEER", name="Peer Co", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 8, 17)
+
+        subject_derived = _minimal_valuation_derived(
+            market_cap=31_810_000_000,
+            enterprise_value=24_090_000_000,
+            ttm_fcf=1_961_000_000,
+        )
+        peer_derived = _minimal_valuation_derived(
+            ticker="PEER",
+            market_cap=50_000_000_000,
+            enterprise_value=45_000_000_000,
+            ttm_fcf=2_000_000_000,
+        )
+
+        peer_context = PipelineContext(
+            security=peer_security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+            valuation_derived=peer_derived,
+        )
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+            valuation_derived=subject_derived,
+        )
+        scorecard = self._minimal_scorecard(security, run_date)
+
+        # Without peers: peer_comparison must skip.
+        packet_no_peers = build_review_packet(datetime(2026, 8, 17, 14, 0, 0), context, scorecard)
+        models_no_peers = packet_no_peers["valuation_inputs"]["models"]
+        peer_result_no_peers = next(r for r in models_no_peers["results"] if r["model"] == "peer_comparison")
+        self.assertEqual(peer_result_no_peers["status"], "skipped")
+
+        # With same-layer peers threaded through: peer_comparison must produce output.
+        packet_with_peers = build_review_packet(
+            datetime(2026, 8, 17, 14, 0, 0), context, scorecard, peer_contexts=[context, peer_context]
+        )
+        models_with_peers = packet_with_peers["valuation_inputs"]["models"]
+        peer_result_with_peers = next(r for r in models_with_peers["results"] if r["model"] == "peer_comparison")
+        self.assertEqual(peer_result_with_peers["status"], "ok")
+        self.assertIn("PEER", peer_result_with_peers["outputs"]["peer_set"])
+
+    def test_valuation_model_evaluate_exception_degrades_to_none(self) -> None:
+        security = Security(ticker="ZM", name="Zoom", layer=Layer.AI_APPLICATIONS, benchmark="QQQ")
+        run_date = date(2026, 8, 17)
+        derived = _minimal_valuation_derived(market_cap=31_810_000_000)
+        context = PipelineContext(
+            security=security,
+            benchmark_ticker="QQQ",
+            prices=[],
+            benchmark_prices=[],
+            official_events=[],
+            fundamentals=None,
+            macro=[],
+            source_statuses=[],
+            valuation_derived=derived,
+        )
+        scorecard = self._minimal_scorecard(security, run_date)
+
+        with patch("market_sentiment.review_packets.valuation_models.evaluate", side_effect=RuntimeError("boom")):
+            packet = build_review_packet(datetime(2026, 8, 17, 14, 0, 0), context, scorecard)
+
+        # The whole packet must still be generated; the model layer degrades to None.
+        self.assertIsNotNone(packet)
+        self.assertIsNone(packet["valuation_inputs"]["models"])
+        self.assertEqual(packet["rule_engine_precheck"]["state"], "Watch")
+        self.assertFalse(packet["rule_engine_precheck"]["partial_coverage"])
 

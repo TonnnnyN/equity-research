@@ -13,6 +13,20 @@ from market_sentiment.sources.social_base import SOCIAL_PROVIDER_NAMES
 DEFAULT_CONFIG_PATH = Path("config/watchlist.toml")
 DEFAULT_REPORT_RECIPIENT = "1786146194@qq.com"
 
+# Target depth of daily price history to backfill once and retain thereafter, in
+# calendar days. 5 years mirrors Yahoo's own "Beta (5Y Monthly)" convention and covers
+# the ~20 quarters of SEC fundamentals history the valuation layer holds, so
+# own_history_percentile can build a quarter-end multiple series across (up to) the
+# same span instead of being capped by a few months of price bars. Deepening this
+# number only helps once RetentionConfig.daily_price_days (below) is at least as large
+# — a shorter retention window would prune the backfilled history right back out.
+PRICE_HISTORY_TARGET_DAYS = 5 * 365  # ~1825 calendar days
+
+# Retention keeps a buffer beyond the target depth so a ticker that was deep-backfilled
+# a few weeks ago isn't immediately pruned back to shallow before its next refresh.
+_PRICE_HISTORY_RETENTION_BUFFER_DAYS = 90
+DEFAULT_DAILY_PRICE_RETENTION_DAYS = PRICE_HISTORY_TARGET_DAYS + _PRICE_HISTORY_RETENTION_BUFFER_DAYS
+
 
 @dataclass(slots=True)
 class EmailDeliveryConfig:
@@ -36,7 +50,7 @@ class RetentionConfig:
     report_days: int = 90
     raw_payload_days: int = 30
     social_raw_payload_days: int = 30
-    daily_price_days: int = 365
+    daily_price_days: int = DEFAULT_DAILY_PRICE_RETENTION_DAYS
     official_event_days: int = 365
     fundamental_days: int = 730
     macro_days: int = 365
@@ -306,7 +320,9 @@ def _load_retention_config(retention_block: dict) -> RetentionConfig:
         report_days=_parse_non_negative_int(retention_block.get("report_days"), 90),
         raw_payload_days=raw_payload_days,
         social_raw_payload_days=_parse_non_negative_int(retention_block.get("social_raw_payload_days"), raw_payload_days),
-        daily_price_days=_parse_non_negative_int(retention_block.get("daily_price_days"), 365),
+        daily_price_days=_parse_non_negative_int(
+            retention_block.get("daily_price_days"), DEFAULT_DAILY_PRICE_RETENTION_DAYS
+        ),
         official_event_days=_parse_non_negative_int(retention_block.get("official_event_days"), 365),
         fundamental_days=_parse_non_negative_int(retention_block.get("fundamental_days"), 730),
         macro_days=_parse_non_negative_int(retention_block.get("macro_days"), 365),

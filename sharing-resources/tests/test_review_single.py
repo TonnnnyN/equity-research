@@ -46,7 +46,7 @@ def _make_bars(ticker: str, start_close: float, drop: float, count: int = 25) ->
     ]
 
 
-def _fake_prices_dropping(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+def _fake_prices_dropping(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
     """Return price bars with a significant downtrend (triggers a drawdown trigger)."""
     drop = 2.0  # ~15% drawdown over 25 bars from 100
     return SourcePayload(
@@ -55,7 +55,7 @@ def _fake_prices_dropping(ticker: str, run_date: date) -> SourcePayload[list[Pri
     )
 
 
-def _fake_prices_flat(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+def _fake_prices_flat(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
     """Return price bars with almost no price movement (trigger will NOT fire)."""
     return SourcePayload(
         data=_make_bars(ticker, 100.0, 0.05),
@@ -113,6 +113,13 @@ def _noop_eia(*args, **kwargs) -> SourcePayload[list[MacroObservation]]:
     )
 
 
+def _fake_valuation_fundamentals(ticker: str, run_date: date) -> SourcePayload[None]:
+    return SourcePayload(
+        data=None,
+        status=SourceStatus(source="sec_valuation_fundamentals", success=False, partial=True, message="stubbed"),
+    )
+
+
 def _wire_fakes(pipeline: DailyPipeline, price_fn) -> None:
     """Attach fake fetch methods to every price client on the pipeline."""
     pipeline.tiger.fetch_daily_prices = price_fn  # type: ignore[method-assign]
@@ -121,6 +128,7 @@ def _wire_fakes(pipeline: DailyPipeline, price_fn) -> None:
     pipeline.stooq.fetch_daily_prices = price_fn  # type: ignore[method-assign]
     pipeline.sec.fetch_recent_events = _fake_events  # type: ignore[method-assign]
     pipeline.sec.fetch_company_facts = _fake_companyfacts  # type: ignore[method-assign]
+    pipeline.sec.fetch_valuation_fundamentals = _fake_valuation_fundamentals  # type: ignore[method-assign]
     pipeline.fred.fetch_series = _fake_fred  # type: ignore[method-assign]
     pipeline.eia.fetch_series = _noop_eia  # type: ignore[method-assign]
 

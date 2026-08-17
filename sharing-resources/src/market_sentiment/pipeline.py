@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from market_sentiment.config import ProjectConfig, load_config
+from market_sentiment.config import PRICE_HISTORY_TARGET_DAYS, ProjectConfig, load_config
 from market_sentiment.decision_tracker import DecisionAlert, evaluate_decision, load_decision_files
 from market_sentiment.http import HttpClient
 from market_sentiment.manual_agent_report import render_manual_agent_report
@@ -20,10 +20,12 @@ from market_sentiment.models import (
     PriceBar,
     Security,
     SourceStatus,
+    ValuationFundamentals,
 )
 from market_sentiment.review_packets import build_review_packet
 from market_sentiment.runtime_preflight import PreflightSummary, build_preflight_summary
 from market_sentiment.scoring import build_scorecard, classify_event_tag
+from market_sentiment.valuation import compute_valuation_derived
 from market_sentiment.social_service import SocialSignalService
 from market_sentiment.subagent_sentiment import build_default_sentiment_judge
 from market_sentiment.sources.alpha_vantage import AlphaVantageClient
@@ -39,6 +41,29 @@ from market_sentiment.sources.tiger import TigerClient
 from market_sentiment.sources.yahoo_finance import YahooFinanceClient
 from market_sentiment.storage import Storage
 from market_sentiment.triggers import compute_trigger
+
+# --- Price-history backfill/incremental policy -----------------------------------
+#
+# A ticker whose cached history's EARLIEST bar is already close to
+# PRICE_HISTORY_TARGET_DAYS old is considered "deep enough" and only needs an
+# incremental top-up from its LATEST cached bar forward. Anything shallower (no cache,
+# a brand-new ticker, or a legacy pre-backfill database) triggers a one-time deep
+# backfill request instead. See DailyPipeline._price_fetch_plan / get_price_history.
+
+# How much slack to allow before re-triggering a deep backfill: a ticker backfilled
+# `PRICE_HISTORY_TARGET_DAYS` deep N days ago will have an earliest-bar age of
+# `PRICE_HISTORY_TARGET_DAYS - N` days from *today's* perspective as time moves on, so
+# without slack it would look "shallow" again almost immediately. This buffer must stay
+# well below the retention window's own buffer (see config.PRICE_HISTORY_TARGET_DAYS)
+# so a ticker never gets pruned before it would naturally re-backfill.
+_DEEP_BACKFILL_STALENESS_SLACK_DAYS = 60
+
+# Bounds on the incremental fetch window (gap since the latest cached bar + slack for
+# weekends/holidays/a skipped run). The minimum protects same-day/back-to-back runs;
+# there is no need for an upper bound because a gap large enough to matter is exactly
+# what re-triggers a deep backfill instead (see slack above).
+_INCREMENTAL_LOOKBACK_SLACK_DAYS = 10
+_INCREMENTAL_MIN_LOOKBACK_DAYS = 5
 
 
 @dataclass
@@ -210,13 +235,13 @@ class DailyPipeline:
         review_packets: dict[str, dict] = {}
 
         for security in self.config.securities:
-            security_prices_payload, price_statuses = self._fetch_prices_with_fallback(security.ticker, run_date)
+            security_prices, security_price_status, price_statuses = self.get_price_history(
+                security.ticker, run_date
+            )
             events_payload = self._fetch_events_with_recovery(security.ticker, run_date)
             companyfacts_payload = self._fetch_companyfacts_with_recovery(security.ticker, run_date)
-            security_prices = self._filter_prices_as_of(security_prices_payload.data, run_date)
             events = self._filter_events_as_of(events_payload.data, run_date)
             companyfacts = self._filter_fundamentals_as_of(companyfacts_payload.data, run_date)
-            self.storage.upsert_prices(security_prices)
             self.storage.upsert_events(events)
             self.storage.upsert_fundamentals(companyfacts)
             all_statuses.extend([*price_statuses, events_payload.status, companyfacts_payload.status])
@@ -231,7 +256,7 @@ class DailyPipeline:
                     macro=macro_data,
                     source_statuses=[
                         *benchmark_status_map.get(security.benchmark, []),
-                        security_prices_payload.status,
+                        security_price_status,
                         events_payload.status,
                         companyfacts_payload.status,
                         *macro_statuses,
@@ -284,6 +309,28 @@ class DailyPipeline:
                     "analyst_targets", f"Failed to fetch analyst targets for {context.security.ticker}: {exc}"
                 )
                 all_statuses.append(failure_status)
+            # Fetch richer SEC valuation fundamentals (reuses the companyfacts payload already
+            # fetched above — see SecClient._get_companyfacts_payload) and compute derived
+            # valuation inputs from it. Layer 2 advisory evidence ONLY: MUST NOT block the
+            # pipeline, MUST NOT affect scores, MUST NOT mark partial_coverage.
+            valuation_payload = self._fetch_valuation_fundamentals_with_recovery(context.security.ticker, run_date)
+            context.valuation_fundamentals = valuation_payload.data
+            all_statuses.append(valuation_payload.status)
+            try:
+                context.valuation_derived = compute_valuation_derived(
+                    ticker=context.security.ticker,
+                    as_of=run_date,
+                    fundamentals=context.valuation_fundamentals,
+                    prices=context.prices,
+                    benchmark_prices=context.benchmark_prices,
+                )
+            except Exception as exc:
+                context.valuation_derived = None
+                all_statuses.append(
+                    self._failure_status(
+                        "valuation_derived", f"Failed to compute valuation derived metrics for {context.security.ticker}: {exc}"
+                    )
+                )
             peer_contexts = layer_peers[context.security.layer]
             event_tag = classify_event_tag(context, peer_contexts)
             scorecard = build_scorecard(
@@ -294,7 +341,9 @@ class DailyPipeline:
                 peer_contexts=peer_contexts,
             )
             triggered_scorecards.append(scorecard)
-            review_packets[context.security.ticker] = build_review_packet(decision_time, context, scorecard)
+            review_packets[context.security.ticker] = build_review_packet(
+                decision_time, context, scorecard, peer_contexts=peer_contexts
+            )
 
         report = DailyRunReport(
             run_date=run_date,
@@ -318,12 +367,10 @@ class DailyPipeline:
         statuses: list[SourceStatus] = []
         status_map: dict[str, list[SourceStatus]] = {}
         for benchmark in self.config.benchmarks.values():
-            payload, price_statuses = self._fetch_prices_with_fallback(benchmark.ticker, run_date)
-            prices = self._filter_prices_as_of(payload.data, run_date)
-            self.storage.upsert_prices(prices)
+            prices, payload_status, price_statuses = self.get_price_history(benchmark.ticker, run_date)
             benchmark_prices[benchmark.ticker] = prices
             statuses.extend(price_statuses)
-            status_map[benchmark.ticker] = [payload.status]
+            status_map[benchmark.ticker] = [payload_status]
         return benchmark_prices, statuses, status_map
 
     def _fetch_macro(self, run_date: date) -> tuple[list[MacroObservation], list[SourceStatus]]:
@@ -355,9 +402,86 @@ class DailyPipeline:
             statuses.append(payload.status)
         return observations, statuses
 
-    def _fetch_prices_with_fallback(self, ticker: str, run_date: date):
+    def _price_fetch_plan(self, ticker: str, run_date: date) -> tuple[bool, int]:
+        """Decide whether ``ticker`` needs a deep backfill or just an incremental top-up.
+
+        Returns ``(needs_deep, incremental_lookback_days)``. ``needs_deep`` is True
+        when the cache has no data at all, or its EARLIEST bar isn't yet close to
+        ``PRICE_HISTORY_TARGET_DAYS`` old (a brand-new ticker, or a legacy database from
+        before this depth change). ``incremental_lookback_days`` is only meaningful when
+        ``needs_deep`` is False: the gap since the cache's LATEST bar, plus slack for
+        weekends/holidays/a skipped run, floored at a small minimum.
+        """
+        earliest = self.storage.get_earliest_cached_price_date(ticker)
+        target_start = run_date - timedelta(days=PRICE_HISTORY_TARGET_DAYS)
+        needs_deep = earliest is None or earliest > target_start + timedelta(
+            days=_DEEP_BACKFILL_STALENESS_SLACK_DAYS
+        )
+
+        latest = self.storage.get_latest_cached_price_date(ticker)
+        if latest is None:
+            incremental_lookback_days = PRICE_HISTORY_TARGET_DAYS
+        else:
+            gap_days = max(0, (run_date - latest).days)
+            incremental_lookback_days = max(
+                _INCREMENTAL_MIN_LOOKBACK_DAYS, gap_days + _INCREMENTAL_LOOKBACK_SLACK_DAYS
+            )
+        return needs_deep, incremental_lookback_days
+
+    def get_price_history(
+        self, ticker: str, run_date: date
+    ) -> tuple[list[PriceBar], SourceStatus, list[SourceStatus]]:
+        """Fetch, cache, and return up to ``PRICE_HISTORY_TARGET_DAYS`` of daily prices.
+
+        This is the single entry point ``run()``, ``_fetch_benchmarks``, and
+        ``review_single`` use for price history: it backfills deeply exactly once per
+        ticker (see ``_price_fetch_plan``), fetches only the incremental gap on every
+        run after that, upserts whatever came back into the SQLite cache, and then
+        reads the FULL merged history back out of the cache — so callers always get the
+        deep multi-year series (needed for beta and own_history_percentile) regardless
+        of how small this run's live fetch was, without re-downloading years of data on
+        every run.
+
+        Returns ``(merged_prices, winning_source_status, all_attempted_statuses)`` —
+        ``winning_source_status`` is the single status of whichever source ultimately
+        supplied this run's fresh bars (mirrors the pre-existing per-security
+        ``source_statuses`` semantics used for ``partial_coverage``); the merged prices
+        already reflect the deep cache regardless of which source won.
+        """
+        needs_deep, incremental_lookback_days = self._price_fetch_plan(ticker, run_date)
+        lookback_days = PRICE_HISTORY_TARGET_DAYS if needs_deep else incremental_lookback_days
+
+        payload, statuses = self._fetch_prices_with_fallback(
+            ticker, run_date, lookback_days=lookback_days, deep=needs_deep
+        )
+        fresh_bars = self._filter_prices_as_of(payload.data, run_date)
+        self.storage.upsert_prices(fresh_bars)
+
+        merged = self.storage.read_cached_prices(
+            ticker, days_back=PRICE_HISTORY_TARGET_DAYS, reference_date=run_date
+        )
+        merged = self._filter_prices_as_of(merged, run_date)
+        return merged, payload.status, statuses
+
+    def _fetch_prices_with_fallback(
+        self,
+        ticker: str,
+        run_date: date,
+        *,
+        lookback_days: int | None = None,
+        deep: bool = False,
+    ):
+        """Try Tiger -> Yahoo -> Alpha Vantage -> Stooq -> SQLite cache, in order.
+
+        ``lookback_days`` (Tiger/Yahoo) and ``deep`` (Alpha Vantage's full/compact
+        toggle) let the caller ask for a shallow incremental top-up or a full
+        multi-year backfill; omitting both preserves each source's own historical
+        default window (unchanged behavior for any caller that doesn't need depth
+        control). Stooq has no windowing parameter — it already serves whatever full
+        history it has on every call, so it's left as-is.
+        """
         try:
-            primary = self.tiger.fetch_daily_prices(ticker, run_date)
+            primary = self.tiger.fetch_daily_prices(ticker, run_date, lookback_days=lookback_days)
         except Exception as exc:
             primary = SourcePayload(
                 data=[],
@@ -368,7 +492,7 @@ class DailyPipeline:
             return primary, statuses
 
         try:
-            fallback_yahoo = self.yahoo.fetch_daily_prices(ticker, run_date)
+            fallback_yahoo = self.yahoo.fetch_daily_prices(ticker, run_date, lookback_days=lookback_days)
         except Exception as exc:
             fallback_yahoo = SourcePayload(
                 data=[],
@@ -379,7 +503,7 @@ class DailyPipeline:
             return fallback_yahoo, statuses
 
         try:
-            fallback_av = self.alpha_vantage.fetch_daily_prices(ticker, run_date)
+            fallback_av = self.alpha_vantage.fetch_daily_prices(ticker, run_date, deep=deep)
         except Exception as exc:
             fallback_av = SourcePayload(
                 data=[],
@@ -404,7 +528,9 @@ class DailyPipeline:
             return fallback_stooq, statuses
 
         # When Tiger, Yahoo, AV, and Stooq all have no data:
-        cached = self.storage.read_cached_prices(ticker, days_back=60)
+        cached = self.storage.read_cached_prices(
+            ticker, days_back=PRICE_HISTORY_TARGET_DAYS, reference_date=run_date
+        )
         if cached:
             latest = max(bar.trading_date for bar in cached)
             cache_status = SourceStatus(
@@ -440,6 +566,21 @@ class DailyPipeline:
             return SourcePayload(
                 data=None,
                 status=self._failure_status("sec_companyfacts", f"Failed to fetch SEC companyfacts for {ticker}: {exc}"),
+            )
+
+    def _fetch_valuation_fundamentals_with_recovery(
+        self,
+        ticker: str,
+        run_date: date,
+    ) -> SourcePayload[ValuationFundamentals | None]:
+        try:
+            return self.sec.fetch_valuation_fundamentals(ticker, run_date)
+        except Exception as exc:
+            return SourcePayload(
+                data=None,
+                status=self._failure_status(
+                    "sec_valuation_fundamentals", f"Failed to fetch SEC valuation fundamentals for {ticker}: {exc}"
+                ),
             )
 
     def _fetch_options_with_recovery(self, ticker: str, run_date: date) -> SourcePayload[OptionSnapshot | None]:
@@ -503,13 +644,11 @@ class DailyPipeline:
             benchmark=benchmark,
         )
 
-        # --- Price lane ---
-        prices_payload, price_statuses = self._fetch_prices_with_fallback(ticker, run_date)
-        prices = self._filter_prices_as_of(prices_payload.data, run_date)
+        # --- Price lane (deep-backfilled once, then incremental — see get_price_history) ---
+        prices, _, price_statuses = self.get_price_history(ticker, run_date)
 
         # --- Benchmark prices ---
-        benchmark_payload, benchmark_price_statuses = self._fetch_prices_with_fallback(benchmark, run_date)
-        benchmark_prices = self._filter_prices_as_of(benchmark_payload.data, run_date)
+        benchmark_prices, _, benchmark_price_statuses = self.get_price_history(benchmark, run_date)
 
         # --- SEC events lane ---
         events_payload = self._fetch_events_with_recovery(ticker, run_date)
@@ -576,6 +715,20 @@ class DailyPipeline:
             context.analyst_snapshot = analyst_payload.data
         except Exception:
             context.analyst_snapshot = None
+
+        # --- SEC valuation fundamentals (non-blocking, Layer 2 advisory only) ---
+        valuation_payload = self._fetch_valuation_fundamentals_with_recovery(ticker, run_date)
+        context.valuation_fundamentals = valuation_payload.data
+        try:
+            context.valuation_derived = compute_valuation_derived(
+                ticker=ticker,
+                as_of=run_date,
+                fundamentals=context.valuation_fundamentals,
+                prices=context.prices,
+                benchmark_prices=context.benchmark_prices,
+            )
+        except Exception:
+            context.valuation_derived = None
 
         # --- Trigger / scorecard ---
         threshold = self.config.thresholds.get(layer)

@@ -63,7 +63,7 @@ class PipelineTests(TestCase):
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.config.social.enabled = False
 
-            def fake_prices(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def fake_prices(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 drop = 1.5 if ticker in {"NVDA", "GOOG"} else 0.2
                 return SourcePayload(
                     data=make_price_payload(ticker, 100.0, drop),
@@ -120,6 +120,10 @@ class PipelineTests(TestCase):
             pipeline.alpha_vantage.fetch_daily_prices = fake_prices  # type: ignore[method-assign]
             pipeline.sec.fetch_recent_events = fake_events  # type: ignore[method-assign]
             pipeline.sec.fetch_company_facts = fake_companyfacts  # type: ignore[method-assign]
+            pipeline.sec.fetch_valuation_fundamentals = lambda ticker, run_date: SourcePayload(  # type: ignore[method-assign]
+                data=None,
+                status=SourceStatus(source="sec_valuation_fundamentals", success=False, partial=True, message="stubbed"),
+            )
             pipeline.fred.fetch_series = fake_fred  # type: ignore[method-assign]
             pipeline.eia.fetch_series = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
                 data=[],
@@ -140,7 +144,7 @@ class PipelineTests(TestCase):
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.config.social.enabled = False
 
-            def fake_prices(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def fake_prices(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 bars = make_price_payload(ticker, 100.0, 1.0)
                 bars.append(
                     PriceBar(
@@ -175,13 +179,13 @@ class PipelineTests(TestCase):
             pipeline = DailyPipeline(load_config(str(CONFIG_PATH)))
             pipeline.config.social.enabled = False
 
-            def primary_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def primary_failure(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(
                     data=[],
                     status=SourceStatus(source="alpha_vantage", success=False, partial=True, message="rate limited"),
                 )
 
-            def stooq_success(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def stooq_success(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(
                     data=make_price_payload(ticker, 100.0, 1.5 if ticker == "NVDA" else 0.2),
                     status=SourceStatus(source="stooq", success=True, partial=False, message="ok"),
@@ -225,6 +229,10 @@ class PipelineTests(TestCase):
             pipeline.stooq.fetch_daily_prices = stooq_success  # type: ignore[method-assign]
             pipeline.sec.fetch_recent_events = fake_events  # type: ignore[method-assign]
             pipeline.sec.fetch_company_facts = fake_companyfacts  # type: ignore[method-assign]
+            pipeline.sec.fetch_valuation_fundamentals = lambda ticker, run_date: SourcePayload(  # type: ignore[method-assign]
+                data=None,
+                status=SourceStatus(source="sec_valuation_fundamentals", success=False, partial=True, message="stubbed"),
+            )
             pipeline.fred.fetch_series = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
                 data=[],
                 status=SourceStatus(source="fred", success=True, message="ok"),
@@ -247,7 +255,7 @@ class PipelineTests(TestCase):
             pipeline.config.social.enabled = False
             pipeline.config.options.enabled = True
 
-            def fake_prices(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def fake_prices(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 drop = 1.5 if ticker in {"NVDA", "GOOG"} else 0.2
                 return SourcePayload(
                     data=make_price_payload(ticker, 100.0, drop),
@@ -297,6 +305,10 @@ class PipelineTests(TestCase):
             pipeline.alpha_vantage.fetch_daily_prices = fake_prices  # type: ignore[method-assign]
             pipeline.sec.fetch_recent_events = fake_events  # type: ignore[method-assign]
             pipeline.sec.fetch_company_facts = fake_companyfacts  # type: ignore[method-assign]
+            pipeline.sec.fetch_valuation_fundamentals = lambda ticker, run_date: SourcePayload(  # type: ignore[method-assign]
+                data=None,
+                status=SourceStatus(source="sec_valuation_fundamentals", success=False, partial=True, message="stubbed"),
+            )
             pipeline.fred.fetch_series = fake_fred  # type: ignore[method-assign]
             pipeline.eia.fetch_series = lambda *args, **kwargs: SourcePayload(  # type: ignore[method-assign]
                 data=[],
@@ -321,7 +333,7 @@ class PipelineTests(TestCase):
             pipeline.config.social.enabled = False
             pipeline.config.options.enabled = True
 
-            def fake_prices(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def fake_prices(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 drop = 1.5 if ticker in {"NVDA", "GOOG"} else 0.2
                 return SourcePayload(
                     data=make_price_payload(ticker, 100.0, drop),
@@ -357,6 +369,10 @@ class PipelineTests(TestCase):
             pipeline.stooq.fetch_daily_prices = fake_prices  # type: ignore[method-assign]
             pipeline.sec.fetch_recent_events = fake_events  # type: ignore[method-assign]
             pipeline.sec.fetch_company_facts = fake_companyfacts  # type: ignore[method-assign]
+            pipeline.sec.fetch_valuation_fundamentals = lambda ticker, run_date: SourcePayload(  # type: ignore[method-assign]
+                data=None,
+                status=SourceStatus(source="sec_valuation_fundamentals", success=False, partial=True, message="stubbed"),
+            )
             pipeline.fred.fetch_series = lambda *args, **kwargs: SourcePayload(data=[], status=SourceStatus(source="fred", success=True, message="ok"))  # type: ignore[method-assign]
             pipeline.eia.fetch_series = lambda *args, **kwargs: SourcePayload(data=[], status=SourceStatus(source="eia", success=True, message="ok"))  # type: ignore[method-assign]
             pipeline.options.fetch_realtime_chain = lambda ticker, run_date: SourcePayload(  # type: ignore[method-assign]
@@ -421,28 +437,28 @@ class PipelineTests(TestCase):
             storage.upsert_prices(bars)
 
             # Mock Tiger to return empty payload (success=False)
-            def tiger_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def tiger_failure(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(
                     data=[],
                     status=SourceStatus(source="tiger", success=False, partial=True, message="no data"),
                 )
 
             # Mock Yahoo to return empty payload (success=False)
-            def yahoo_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def yahoo_failure(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(
                     data=[],
                     status=SourceStatus(source="yahoo_chart", success=False, partial=True, message="no data"),
                 )
 
             # Mock Alpha Vantage to return empty payload (success=False)
-            def av_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def av_failure(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(
                     data=[],
                     status=SourceStatus(source="alpha_vantage", success=False, partial=True, message="rate limited"),
                 )
 
             # Mock Stooq to return empty payload (success=False)
-            def stooq_failure(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def stooq_failure(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 return SourcePayload(
                     data=[],
                     status=SourceStatus(source="stooq", success=False, partial=True, message="no data"),
@@ -683,7 +699,7 @@ class PipelineTests(TestCase):
 
             # Mock price fetching to return prices that trigger invalidate (price declines from 115 slowly)
             # After 25 bars at -0.1 drop per bar: 115 - 2.4 = 112.6, which is > 110 (10% above 100)
-            def fake_prices(ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+            def fake_prices(ticker: str, run_date: date, **_kwargs) -> SourcePayload[list[PriceBar]]:
                 bars = make_price_payload(ticker, 115.0, 0.1)
                 return SourcePayload(
                     data=bars,

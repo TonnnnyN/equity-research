@@ -5,6 +5,7 @@ from datetime import date, datetime
 from enum import StrEnum
 from typing import Any
 
+from market_sentiment import valuation_models
 from market_sentiment.models import (
     FundamentalSnapshot,
     MacroObservation,
@@ -20,6 +21,7 @@ def build_review_packet(
     generated_at: datetime,
     context: PipelineContext,
     scorecard: ScoreCard,
+    peer_contexts: list[PipelineContext] | None = None,
 ) -> dict[str, Any]:
     prices = sorted(context.prices, key=lambda bar: bar.trading_date)
     benchmark_prices = sorted(context.benchmark_prices, key=lambda bar: bar.trading_date)
@@ -30,7 +32,7 @@ def build_review_packet(
     return _serialize(
         {
             "packet_type": "agent_review_packet",
-            "schema_version": "1.2",
+            "schema_version": "1.4",
             "packet_id": f"{scorecard.run_date.isoformat()}::{scorecard.security.ticker}",
             "generated_at": generated_at,
             "run_date": scorecard.run_date,
@@ -75,6 +77,7 @@ def build_review_packet(
             },
             "official_events": [_serialize_event(event) for event in context.official_events[:5]],
             "fundamentals_snapshot": _serialize_fundamentals(context.fundamentals),
+            "valuation_inputs": _serialize_valuation_inputs(context, prices, peer_contexts),
             "option_summary": _serialize_option_snapshot(getattr(context, "options_snapshot", None)),
             "social_summary": _serialize_social_summary(context),
             "analyst_summary": _serialize_analyst_summary(context),
@@ -269,8 +272,67 @@ def _serialize_analyst_summary(context: PipelineContext) -> dict[str, Any] | Non
             "recommendation_mean": snapshot.recommendation_mean,
             "trend": snapshot.trend[:2],
             "recent_changes": recent_changes_out,
+            "history": getattr(snapshot, "history_signals", None) or {},
         }
     )
+
+
+def _serialize_valuation_inputs(
+    context: PipelineContext,
+    prices: list[PriceBar],
+    peer_contexts: list[PipelineContext] | None = None,
+) -> dict[str, Any] | None:
+    """Serialize SEC-sourced valuation data-layer inputs for the review packet.
+
+    This is Layer 2 advisory evidence only, following the ``analyst_summary`` pattern
+    exactly — it MUST NOT enter ``bucket_scores``, MUST NOT change any score or state,
+    MUST NOT set ``partial_coverage``, and MUST NOT be able to fail the pipeline.
+    Alongside the raw ``fundamentals`` / ``derived`` inputs, this also carries
+    ``models`` — the output of the ``valuation_models`` router + 12-model layer built
+    on top of them. Returns None when nothing is available.
+    """
+    fundamentals = getattr(context, "valuation_fundamentals", None)
+    derived = getattr(context, "valuation_derived", None)
+    if fundamentals is None and derived is None:
+        return None
+    return _serialize(
+        {
+            "fundamentals": fundamentals,
+            "derived": derived,
+            "models": _serialize_valuation_models(context, derived, fundamentals, prices, peer_contexts),
+        }
+    )
+
+
+def _serialize_valuation_models(
+    context: PipelineContext,
+    derived: Any,
+    fundamentals: Any,
+    prices: list[PriceBar],
+    peer_contexts: list[PipelineContext] | None,
+) -> dict[str, Any] | None:
+    """Run the Layer 2 valuation MODEL layer (``valuation_models.evaluate``) and
+    serialize its report. Wrapped exactly like the existing valuation fetch in
+    ``pipeline.py``'s ``_fetch_valuation_fundamentals_with_recovery`` /
+    ``compute_valuation_derived`` calls: this MUST NOT enter ``bucket_scores``,
+    MUST NOT change any ``ActionState``, MUST NOT set ``partial_coverage``, and
+    MUST NOT be able to raise into or fail the pipeline. Any failure — including a
+    missing ``ValuationDerived`` (the router's only required input besides
+    ``Security``) — degrades to None rather than raising.
+    """
+    if derived is None:
+        return None
+    try:
+        report = valuation_models.evaluate(
+            security=context.security,
+            derived=derived,
+            fundamentals=fundamentals,
+            prices=prices,
+            peer_contexts=peer_contexts or [],
+        )
+        return report.to_dict()
+    except Exception:
+        return None
 
 
 def _summarize_macro(observations: list[MacroObservation]) -> dict[str, Any]:

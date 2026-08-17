@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 from market_sentiment.http import HttpClient
 from market_sentiment.models import PriceBar, SourceStatus
 from market_sentiment.sources.base import SourcePayload
 from market_sentiment.storage import Storage
+
+# Default range when the caller doesn't ask for a specific lookback depth (preserves
+# the historical ~120-trading-day window this client has always used by default).
+_DEFAULT_RANGE = "6mo"
 
 
 class YahooFinanceClient:
@@ -16,12 +20,21 @@ class YahooFinanceClient:
         self._http = http_client
         self._storage = storage
 
-    def fetch_daily_prices(self, ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+    def fetch_daily_prices(
+        self, ticker: str, run_date: date, *, lookback_days: int | None = None
+    ) -> SourcePayload[list[PriceBar]]:
         """Fetch daily prices from Yahoo Finance Chart API.
 
         Args:
             ticker: Stock ticker (e.g., 'MSFT', '9660.HK')
             run_date: Reference date for the fetch
+            lookback_days: How many calendar days of history to request, counted back
+                from ``run_date``. When ``None`` (the default), falls back to Yahoo's
+                ``range=6mo`` shortcut — the historical default for this client, used
+                for a plain incremental/no-cache-context call. When given, an explicit
+                ``period1``/``period2`` window is requested instead, which lets the
+                caller ask for anything from a few days (incremental top-up) to several
+                years (deep backfill; see ``config.PRICE_HISTORY_TARGET_DAYS``).
 
         Returns:
             SourcePayload with list of PriceBar objects or empty list on failure
@@ -32,17 +45,24 @@ class YahooFinanceClient:
         encoded_ticker = quote(ticker, safe="")
         url = self.base_url.format(ticker=encoded_ticker)
 
-        # Fetch with 6-month range to cover ~120 trading days
-        try:
-            response = self._http.get(
-                url,
-                params={
-                    "interval": "1d",
-                    "range": "6mo",
-                    "events": "div,splits",
-                    "includePrePost": "false",
-                },
+        params = {
+            "interval": "1d",
+            "events": "div,splits",
+            "includePrePost": "false",
+        }
+        if lookback_days is None:
+            params["range"] = _DEFAULT_RANGE
+        else:
+            period_start = datetime.combine(
+                run_date - timedelta(days=lookback_days), datetime.min.time(), tzinfo=timezone.utc
             )
+            # end-of-day on run_date so a same-day bar isn't excluded by the boundary.
+            period_end = datetime.combine(run_date, datetime.max.time(), tzinfo=timezone.utc)
+            params["period1"] = str(int(period_start.timestamp()))
+            params["period2"] = str(int(period_end.timestamp()))
+
+        try:
+            response = self._http.get(url, params=params)
         except Exception as exc:
             return SourcePayload(
                 data=[],

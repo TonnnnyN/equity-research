@@ -21,7 +21,23 @@ class AlphaVantageClient:
         self._storage = storage
         self._api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
 
-    def fetch_daily_prices(self, ticker: str, run_date: date) -> SourcePayload[list[PriceBar]]:
+    def fetch_daily_prices(
+        self, ticker: str, run_date: date, *, deep: bool = False
+    ) -> SourcePayload[list[PriceBar]]:
+        """Fetch daily adjusted prices from Alpha Vantage.
+
+        Args:
+            ticker: Stock ticker.
+            run_date: Reference date for the fetch.
+            deep: When True, requests ``outputsize=full`` (Alpha Vantage's full-history
+                series, 20+ years) for a one-time deep backfill. When False (default),
+                requests ``outputsize=compact`` (last ~100 daily points) — the
+                historical default, appropriate for routine incremental top-ups and
+                cheap on Alpha Vantage's tight free-tier rate limit.
+
+        Returns:
+            SourcePayload with list of PriceBar objects or empty list on failure
+        """
         ingested_at = datetime.now(timezone.utc)
         if not self._api_key:
             return SourcePayload(
@@ -55,7 +71,7 @@ class AlphaVantageClient:
                 "function": "TIME_SERIES_DAILY_ADJUSTED",
                 "symbol": ticker,
                 "apikey": self._api_key,
-                "outputsize": "compact",
+                "outputsize": "full" if deep else "compact",
             },
         )
         safe_url = getattr(response, "safe_url", response.url)

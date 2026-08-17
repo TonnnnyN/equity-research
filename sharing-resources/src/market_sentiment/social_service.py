@@ -87,7 +87,7 @@ class SocialSignalService:
             return SocialCollectionResult(snapshot=None, posts=annotated_posts, statuses=statuses)
 
         # Apply cache-aware sentiment judgment
-        output_posts = self._judge_posts_with_cache(annotated_posts, context.security.ticker)
+        output_posts = self._judge_posts_with_cache(annotated_posts, context.security.ticker, run_date)
 
         snapshot = build_social_snapshot(
             ticker=context.security.ticker,
@@ -110,7 +110,7 @@ class SocialSignalService:
         )
 
 
-    def _judge_posts_with_cache(self, posts: list[SocialPost], ticker: str) -> list[_OutputPost]:
+    def _judge_posts_with_cache(self, posts: list[SocialPost], ticker: str, run_date: date) -> list[_OutputPost]:
         """Judge posts using cache and subagent, avoiding re-judgment of cached posts.
 
         1. Query cache for posts we've already judged (last 14 days)
@@ -119,7 +119,19 @@ class SocialSignalService:
         4. Merge cached + new judgments, return output (without body field)
         """
         now = datetime.now(timezone.utc)
-        lookback = now - timedelta(days=14)
+
+        # The cache lookback is anchored to the pipeline's `run_date`, NOT to wall-clock
+        # "now". collect() is routinely re-run for a run_date that is not today (backfills,
+        # reprocessing, tests that fix a historical date) — and `posted_at` is the post's own
+        # creation time, which for such a run can be arbitrarily far behind the real calendar
+        # date the process happens to execute on. Anchoring the lookback to wall-clock time
+        # silently empties the effective cache window in that case (every cached row's
+        # posted_at falls outside `[wall_clock_now - 14d, wall_clock_now]`), so posts already
+        # judged and cached get sent to the paid sentiment judge again on every single run —
+        # a real cost/latency bug, not just a test artifact. Using `run_date` keeps the window
+        # correct regardless of when the code actually executes.
+        reference = datetime.combine(run_date, datetime.max.time(), tzinfo=timezone.utc)
+        lookback = reference - timedelta(days=14)
 
         # Read cached posts from storage
         cached_rows = self.storage.get_social_posts_for_ticker(ticker, since=lookback)
