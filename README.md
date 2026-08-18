@@ -17,34 +17,44 @@ Subcommands: `init-db`, `review TICKER [...]`, `review-ticker TICKER`, `valuatio
 ## Architecture
 
 ```
-Data sources ──→ [ Python Pipeline ] ──→ [ Evidence Packet ]
-  (SEC, Yahoo,         ↓
-   Stooq)          Compute SEC norms,
-                   valuation math,
-                   four always-on metrics
-                        ↓
-              ┌─────────────────────┐
-              │                     │
-         LAYER 1:             LAYER 2:
-         Bucket Scores        Always-Ons & Raw Evidence
-         (6 buckets,          (Piotroski, Altman, Beneish,
-          hard vetos)          net-cash floor,
-              │                 price bars, macro)
-              │                     │
-              └──→ [ Agent Reader ]─┘
-                   Sets bucket weights,
-                   picks valuation model order
-                        ↓
-              [ Python Valuation ]
-                        ↓
-         Hard Vetoes (fraud, bankruptcy) → REJECT
-                        ↓
-         Valuation Gate (can lower, never raise)
-                        ↓
-         Decision: Reject / Watch / Starter / Add / Exit
+SEC / Yahoo / Stooq
+        |
+   Python: clean and compute
+   (quarter normalisation, TTM, beta, price stats)
+        |
+   +----+------------------------+
+   |                             |
+ LAYER 1                      LAYER 2
+ bucket scores                fundamentals, filings, price
+ hard vetoes                  analyst targets, valuation inputs
+   |                          four always-on metrics
+   |                             |
+   |                    Agent reads Layer 2 first
+   |                    1. portrait: 10-K, then web for recent news
+   |                    2. order: which models, which assumptions,
+   |                       and which it declined, with reasons
+   |                             |
+   |                    Python runs exactly what was ordered
+   |                             |
+ Agent sets the six weights      |
+ for this company                |
+   |                             |
+   +----------+------------------+
+              |
+      Agent judges, per SKILL.md
+      valuation may lower the action, never raise it
+      a hard veto caps it at Reject regardless
+              |
+      one action + invalidate / rerate conditions
+              |
+      check-decisions -> outcome ledger
 ```
 
-Layer 1 is mechanical bucket scoring (advisory only). Layer 2 holds always-on metrics and raw evidence the agent reasons over. Python computes what hand-writing would butcher: SEC norms, net cash, valuations. The agent handles reading evidence, setting weights per company, picking models, deciding action, and writing condition checks.
+Layer 1 and Layer 2 are layers of the evidence packet, not stages of the pipeline. Layer 1 is the mechanical bucket score and is advisory. Layer 2 is the evidence the agent reasons over, and the valuation models live there, which is why they never feed the bucket scores.
+
+The agent chooses the models rather than Python choosing for it. It reads the filings, builds a portrait of the business, then names the models it wants and the assumptions to run them on. Python supplies no defaults: an order with no discount rate returns nothing for the models that need one. Piotroski, Altman, Beneish and the net-cash floor compute regardless, so a manipulation screen cannot be quietly skipped.
+
+Python computes what hand-writing would get wrong in ways nobody notices: SEC quarter normalisation, net cash, every valuation formula. The agent does the reading and the judging.
 
 ## Bucket Scoring (110-point scale)
 
