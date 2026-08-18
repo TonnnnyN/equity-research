@@ -17,44 +17,42 @@ Subcommands: `init-db`, `review TICKER [...]`, `review-ticker TICKER`, `valuatio
 ## Architecture
 
 ```
-SEC / Yahoo / Stooq
-        |
-   Python: clean and compute
-   (quarter normalisation, TTM, beta, price stats)
-        |
-   +----+------------------------+
-   |                             |
- LAYER 1                      LAYER 2
- bucket scores                fundamentals, filings, price
- hard vetoes                  analyst targets, valuation inputs
-   |                          four always-on metrics
-   |                             |
-   |                    Agent reads Layer 2 first
-   |                    1. portrait: 10-K, then web for recent news
-   |                    2. order: which models, which assumptions,
-   |                       and which it declined, with reasons
-   |                             |
-   |                    Python runs exactly what was ordered
-   |                             |
- Agent sets the six weights      |
- for this company                |
-   |                             |
-   +----------+------------------+
-              |
-      Agent judges, per SKILL.md
-      valuation may lower the action, never raise it
-      a hard veto caps it at Reject regardless
-              |
-      one action + invalidate / rerate conditions
-              |
-      check-decisions -> outcome ledger
+          SEC / Yahoo / Stooq
+                   |
+          Python cleans and computes
+          quarters, TTM, beta, price stats
+          Piotroski, Altman, Beneish, net cash, always,
+          so a fraud screen cannot be quietly skipped
+                   |
+     +-------------+-----------------------+
+     |                                     |
+  LAYER 1                             LAYER 2
+  fundamentals                        filings, price, targets,
+  risk flags                          model inputs
+  chain                                    |
+  sentiment                           agent reads the 10-K,
+  price flow                          then the web
+  social                                   |
+     |                                agent picks the models and
+  agent sets the six                  the assumptions, and says
+  weights for this ticker             which it skipped and why
+     |                                     |
+     |                                Python runs that order
+     |                                     |
+     +-------------+-----------------------+
+                   |
+          agent decides, per SKILL.md
+          valuation can lower the call, never raise it
+          a hard veto forces Reject
+                   |
+          one call + what would kill it
+                   |
+          check-decisions -> outcome ledger
 ```
 
-Layer 1 and Layer 2 are layers of the evidence packet, not stages of the pipeline. Layer 1 is the mechanical bucket score and is advisory. Layer 2 is the evidence the agent reasons over, and the valuation models live there, which is why they never feed the bucket scores.
+Layer 1 and Layer 2 are layers of the evidence packet, not stages of a pipeline. Layer 1 is a score, not a verdict. Layer 2 is what the agent reasons over, and the valuation models sit there, which is why they never feed the bucket scores.
 
-The agent chooses the models rather than Python choosing for it. It reads the filings, builds a portrait of the business, then names the models it wants and the assumptions to run them on. Python supplies no defaults: an order with no discount rate returns nothing for the models that need one. Piotroski, Altman, Beneish and the net-cash floor compute regardless, so a manipulation screen cannot be quietly skipped.
-
-Python computes what hand-writing would get wrong in ways nobody notices: SEC quarter normalisation, net cash, every valuation formula. The agent does the reading and the judging.
+The agent picks the models rather than Python picking for it. It reads the filings, builds a portrait of the business, then names the models it wants and the assumptions to run them on. Python supplies no defaults: an order with no discount rate returns nothing for the models that need one. What Python does own is the arithmetic that goes wrong in ways nobody notices, such as SEC quarter normalisation, net cash, and every valuation formula.
 
 ## Bucket Scoring (110-point scale)
 
@@ -66,4 +64,4 @@ Weights total 110 and scale dynamically when buckets drop. Agent may raise or lo
 
 SEC EDGAR (10-K, 10-Q, 8-K) via `SEC_USER_AGENT`; Yahoo Finance (prices, targets, analyst history); Stooq (price fallback); optional social (Reddit, X).
 
-Every decision stores weights, assumptions, and `invalidate_if`/`rerate_if` conditions. `check-decisions` evaluates daily. Theses resolve as `invalidated`, `rerated`, `expired` (90+ days), or `superseded`. Calibration lives in `defaults/calibration.toml`; edits must cite outcome evidence. Immutable rules in `SKILL.md` (agent reads, cannot edit).
+Every decision stores weights, assumptions, and `invalidate_if`/`rerate_if` conditions. `check-decisions` evaluates daily. Theses resolve as `invalidated`, `rerated`, `expired` (90+ days), or `superseded`. Default weights and valuation habits live in `defaults/calibration.toml`. Immutable rules live in `SKILL.md`, which the agent reads but cannot edit.
