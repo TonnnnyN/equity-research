@@ -53,6 +53,7 @@ _FLOW_CONCEPT_TAGS: dict[str, list[str]] = {
     "capex": [
         "PaymentsToAcquirePropertyPlantAndEquipment",
         "PropertyPlantAndEquipmentAdditions",
+        "PaymentsToAcquireProductiveAssets",
     ],
     "share_based_compensation": [
         "ShareBasedCompensation",
@@ -463,7 +464,7 @@ def _build_snapshot(
     )
     capex_latest, _, capex_meta = _extract_latest_pair(
         us_gaap,
-        ["PaymentsToAcquirePropertyPlantAndEquipment", "PropertyPlantAndEquipmentAdditions"],
+        ["PaymentsToAcquirePropertyPlantAndEquipment", "PropertyPlantAndEquipmentAdditions", "PaymentsToAcquireProductiveAssets"],
     )
     cash_latest, _, cash_meta = _extract_latest_pair(
         us_gaap,
